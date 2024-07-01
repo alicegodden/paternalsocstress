@@ -2,7 +2,7 @@
 
 Zebrafish paternal social stress scripts and files:
 
-# Custom Perl scripts:
+# Perl scripts
 
 Perl script for generation of counts data from PatMan outputs for miRNA and piRNA data - PatMan_counts.pl
 
