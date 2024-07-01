@@ -1,6 +1,7 @@
 # Environmentally induced variation in sperm sRNAs is linked to gene expression and transposable elements in the offspring
 
-Zebrafish paternal social stress scripts and files:
+Zebrafish paternal social stress scripts and files, not all used in the generation of data in the publication.
+
 
 # Perl scripts
 
