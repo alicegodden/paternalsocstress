@@ -1,0 +1,2989 @@
+---
+title: 'Article: Sperm-mediated epigenetic effects on zebrafish development.'
+author: "Willian Silva"
+output:
+  html_notebook:
+    css: rmarkdown-fixedtoc.css
+    fig_caption: yes
+    fig_height: 6
+    fig_width: 8
+    highlight: zenburn
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 5
+  html_document:
+    keep_md: yes
+  pdf_document: default
+---
+
+# **Experimental design**:
+![](article3-experimentaldesign.png)
+
+## **Install and call necessary libraries**
+```{r}
+source("http://bioconductor.org/biocLite.R")
+#biocLite("GenomicRanges")
+#biocLite("GenomicFeatures")
+#biocLite("Rsamtools")
+#biocLite("DESeq")
+#biocLite("edgeR")
+#biocLite("org.Mm.eg.db")
+#biocLite("limma")
+#biocLite("clusterProfiler")
+#install.packages("tidyr")
+#install.packages("ggplot2")
+#install.packages("reshape2")
+#install.packages("dplyr")
+#install.packages("fitdistrplus")
+#install.packages("logspline")
+#install.packages("lm4")
+#install.packages("car")
+#install.packages("plotrix")
+#install.packages("lattice")
+#install.packages("glmm")
+#install.packages("MCMCglmm")
+#install.packages("doMC")
+#install.packages("foreach")
+
+library("limma")
+library("tidyr")
+library("ggplot2")
+library("edgeR")
+library("reshape2")
+library("DESeq2")
+library("tidyr")
+library("dplyr")
+library("car")
+library("lme4")
+library("fitdistrplus")
+library("logspline")
+library("plotrix")
+library("lattice")
+library("glmm")
+library("MCMCglmm")
+library("doMC")
+library("foreach")
+library("doParallel") 
+library("clusterProfiler")
+
+#load("article3-rnotebook-version14.RData")
+```
+
+## **Import raw data and experiment information.**
+```{r}
+experiment<-read.csv("embryo-info.tab",header=TRUE,sep="\t")
+head(experiment)
+nrow(experiment)
+```
+
+```{r, fig.height=6, fig.width=10}
+#Plot the structure of the data.
+#?sizetree
+plotrix::sizetree(x=experiment[,c(4,5,6,3,2)])
+```
+
+```{r}
+data0<-read.csv("article3-matrix-data0-complete.txt",header=TRUE,sep="\t")
+data0$strandsum<-data0$strand1+data0$strand2 #Add a column with the sum of strand1 and strand2.
+head(data0)
+nrow(data0)
+str(data0)
+```
+
+## **Remove unnecessary rows and columns.**
+```{r}
+removelist<-c("N_unmapped","N_multimapping","N_noFeature","N_ambiguous")
+data1<-subset(data0,!(gene %in% removelist))
+head(data1)
+nrow(data1)
+```
+
+```{r eval=FALSE}
+#write.table(data1,file="article3-matrix-data1.txt",sep="\t")
+```
+
+```{r}
+#Check correlation between unstranded and strand1 counts for one sample.
+y<-data1[data1$sample=="E107-4",]
+cor(y$unstranded,y$strand2)
+#plot(y$unstranded,y$strand2)
+```
+
+## **Convert data set into a samples-as-columns data frame (format used by EdgeR and DESeq2).**
+```{r}
+#?data.frame
+#?merge
+#Read first sample to make the initial data frame which all other samples are going to be merged with.
+focalstrand<-4 #Column of strand to be used (2=unstranded; 3=strand1; 4=strand2; 10=strand1+strand2).
+sampleid<-levels(data1$sample)[1]
+sample1<-subset(data1,sample==sampleid)
+#Remove metadata columns.
+sample1xc<-sample1[,c(1,focalstrand)] #Keep only columns 1 (gene name) and the strand to the used.
+#sample1xc<-sample1[,-c(3:10)] #Keep only columns 1 (gene name) and 2 (unstranded counts).
+colnames(sample1xc)<-c("gene",sampleid) #Replace count column label with sample ID.
+#head(sample1xc)
+#nrow(sample1xc)
+data2<-sample1xc #Use first sample as first entry of the complete data set.
+#Add all other samples to the complete data set.
+for (i in 2:nlevels(data1$sample)){
+  sampleid<-levels(data1$sample)[i]
+  samplei<-subset(data1,sample==sampleid)
+  samplexc<-samplei[,c(1,focalstrand)]
+  #samplexc<-samplei[,-c(3:10)]
+  colnames(samplexc)<-c("gene",sampleid)
+  data2<-merge(data2,samplexc,by="gene",all=TRUE)
+}
+#head(data2)
+#nrow(data2)
+data2[is.na(data2)]<-0 #Replace NA with zero.
+data2<-data.frame(data2,row.names=1) #Transform first column into row names.
+colnames(data2)<-gsub("\\.","-",colnames(data2))
+head(data2)
+nrow(data2)
+
+#?write.table
+```
+
+```{r eval=FALSE}
+#write.table(data2,file="article3-matrix-data2.txt",sep="\t")
+```
+
+## **Trim data set.**
+```{r eval=FALSE}
+#data2<-read.csv(file="article3-matrix-data2.txt",header=TRUE,sep="\t")
+```
+
+```{r}
+#data2<-read.csv(file="article3-matrix-data2.txt",header=TRUE,sep="\t")
+#keep<-rowSums(cpm(data2)>1)>=2 #Condition to keep rows: cpm>1 AND presence in more than 2 samples.
+keep80<-rowSums(cpm(data2)>1)>=80 #Condition to keep rows: cpm>1 AND presence in all samples.
+data3<-data2[keep80,] #Remove low count genes.
+hist(rowSums(cpm(data3)>1))
+head(data3)
+nrow(data3)
+```
+
+```{r eval=FALSE}
+#write.table(data3,file="article3-matrix-data3.txt",sep="\t")
+#write.table(data3.80,file="article3-matrix-data3.80.txt",sep="\t")
+#data3<-read.csv(file="article3-matrix-data3.txt",header=TRUE,sep="\t")
+#data3<-read.csv(file="article3-matrix-data3.80.txt",header=TRUE,sep="\t")
+```
+
+## **Library sizes**
+
+```{r, fig.height=4, fig.width=8}
+#Basic quanlity control.
+experiment$couple<-as.factor(paste0(as.character(experiment$male),as.character(experiment$female)))
+sorted<-sort(colSums(countData)*1e-6)
+
+goodcolors.couple<-rainbow(nlevels(experiment$couple),s=1,v=1,start=0,end=1,alpha=1) #?rainbow
+goodcolors.treatment<-c("blue","red") #?rainbow
+goodcolors.seqpool<-rainbow(nlevels(experiment$seqpool),s=1,v=1,start=0,end=1,alpha=1) #?rainbow
+
+couplecolors<-rep("NULL",length(colnames(countData)))
+treatmentcolors<-rep("NULL",length(colnames(countData)))
+seqpoolcolors<-rep("NULL",length(colnames(countData)))
+for (i in 1:length(as.factor(sorted))){
+  embryo<-experiment[experiment$sample==as.factor(colnames(countData))[i],]
+  couplecolors[i]<-goodcolors.couple[embryo$couple[1]]
+  treatmentcolors[i]<-goodcolors.treatment[embryo$treatment[1]]
+  seqpoolcolors[i]<-goodcolors.seqpool[embryo$seqpool[1]]
+}
+```
+
+```{r, fig.height=4, fig.width=8}
+#pdf("librarysizespersample-couplecolor.pdf",width=20,height=10,pointsize=15)
+library<-barplot(sorted,names=colnames(sorted),las=2,width=1,
+        ylim=c(0,30),space=0.2,
+        col=couplecolors,xlab=NULL,ylab="Library size (millions)")
+points(x=library[1:80],y=sorted+0.5,pch=20,col=treatmentcolors,cex=2)
+legend("topleft",c("LOW","HIGH"),cex=1.3,bty="n",fill=c("blue","red"))
+#dev.off()
+```
+
+## **Run DESeq2 with treatment, female_id and male_id as fixed effects.**
+```{r, fig.height=4, fig.width=5}
+#data3<-read.csv(file="article3-matrix-data3.txt",header=TRUE,sep="\t")
+countData<-data3
+
+#Create experimental labels (two conditions).
+cond1<-array(data=0,dim=ncol(countData)) #Treatment.
+cond2<-array(data=0,dim=ncol(countData)) #female_id.
+cond3<-array(data=0,dim=ncol(countData)) #male_id.
+for (i in 1:ncol(countData)){
+  cond1[i]<-experiment[experiment$sample==colnames(countData)[i],]$treatment[1]
+  cond2[i]<-experiment[experiment$sample==colnames(countData)[i],]$female[1]
+  cond3[i]<-experiment[experiment$sample==colnames(countData)[i],]$male[1]
+}
+
+colData2<-DataFrame(condition=factor(cond1),femaleid=factor(cond2),maleid=factor(cond3))
+
+#Create DESeq input matrix.
+dds2<-DESeqDataSetFromMatrix(countData,colData2,formula(~condition+femaleid))
+
+#Run DEseq.
+dds2<-DESeq(dds2)
+
+#Visualize DESeq2 differentially expressed genes.
+#pdf("deseq2-maplot.pdf",width=12,height=12,pointsize=20)
+plotMA(dds2)
+#dev.off()
+
+#Get DESeq2 differentially expressed genes.
+res2<-results(dds2)
+
+#Order by BH adjusted p-value.
+resOrdered2<-res2[order(res2$padj),]
+
+#resOrdered2genelist.80<-c(rownames(resOrdered2))
+#write.table(resOrdered2genelist.80,file="deseq2-results2.80-genelist-orderedbypadjust.txt",sep='\t',quote=FALSE,row.names=FALSE,col.names=FALSE)
+
+#Matrix of differentially expressed genes (FDR=5%, |fold-change|>0). In DESeq2 padj=Benjamini-Hochberg.
+sig2<-resOrdered2[!is.na(resOrdered2$padj) &
+                    resOrdered2$padj<=0.05 &
+                    abs(resOrdered2$log2FoldChange)>=0,]
+
+head(subset(sig2,sig2$padj<0.05),n=20)
+```
+
+```{r}
+nrow(subset(sig2,sig2$padj<0.05))
+subset(sig2,sig2$padj<0.05)
+
+deseq2sig2<-as.data.frame(rownames(sig2))
+colnames(deseq2sig2)<-"genes"
+deseq2sig2$baseMean<-sig2$baseMean
+deseq2sig2$log2FoldChange<-sig2$log2FoldChange
+deseq2sig2$lfcSE<-sig2$lfcSE
+deseq2sig2$stat<-sig2$stat
+deseq2sig2$pvalue<-sig2$pvalue
+deseq2sig2$padj<-sig2$padj
+deseq2sig2$genename<-"Null"
+
+#Import file with Ensembl ID and Gene Names.
+geneinfo<-read.csv(file="ensembl-zebrafish-genes.txt",header=TRUE,sep=",")
+genenames<-geneinfo[,c(1,6)]
+
+#setup parallel backend to use many processors
+cores<-detectCores()
+cl<-makeCluster(cores[1]-1) #not to overload your computer
+registerDoParallel(cl)
+
+found<-0
+noname<-0
+notfound<-0
+multiple<-0
+foreach(i=1:nlevels(deseq2sig2$genes)) %do% {
+  gname<-droplevels(subset(genenames,Gene.stable.ID==levels(deseq2sig2$genes)[i]))
+  if(nrow(gname)==0){
+    notfound<-notfound+1
+    print(paste0("Gene #",i," (",levels(deseq2sig2$genes)[i],") was not found."))
+    deseq2sig2[deseq2sig2$genes==levels(deseq2sig2$genes)[i],7]<-as.character(levels(deseq2sig2$genes)[i])
+  }else{
+    if(nlevels(gname$Gene.name)==1){
+      found<-found+1
+      if(as.character(gname[1,2])==""){
+        noname<-noname+1
+        deseq2sig2[deseq2sig2$genes==levels(deseq2sig2$genes)[i],8]<-as.character(levels(deseq2sig2$genes)[i])
+      }else{
+        deseq2sig2[deseq2sig2$genes==levels(deseq2sig2$genes)[i],8]<-as.character(gname[1,2])
+      }
+    }else{
+      multiple<-multiple+1
+      print(paste0("Gene #",i," (",levels(deseq2sig2$genes)[i],") has ",nlevels(gname$Gene.name)," matches."))
+      deseq2sig2[deseq2sig2$genes==levels(deseq2sig2$genes)[i],8]<-"MULTIPLE"
+    }
+  }
+}
+deseq2sig2$genename<-as.factor(deseq2sig2$genename)
+deseq2sig2
+
+#write.table(res2,file="deseq2-results2.80.txt",sep='\t',quote=FALSE)
+#write.table(deseq2sig2,file="deseq2-results2.80-significant.txt",sep='\t',quote=FALSE) 
+```
+
+```{r}
+#Genes that are common between DESeq2 and the GLMM model.
+deseq2sig2[deseq2sig2$genes %in% as.factor(c("ENSDARG00000083325","ENSDARG00000105139","ENSDARG00000078473",
+                 "ENSDARG00000083738","ENSDARG00000098085","ENSDARG00000098933",
+                 "ENSDARG00000099175","ENSDARG00000101391","ENSDARG00000102504",
+                 "ENSDARG00000103481","ENSDARG00000104159","ENSDARG00000058203")),]
+```
+
+##### **Run EdgeR with treatment as the only effect (fixed).**
+```{r, fig.height=4, fig.width=5}
+edgedata0<-DGEList(counts=data3,genes=rownames(data3))
+dim(edgedata0)
+head(edgedata0$counts)
+
+edgedata0<-calcNormFactors(edgedata0,method="TMM")
+
+edgetreatment<-rep(0,ncol(edgedata0$counts))
+edgemale<-rep(0,ncol(edgedata0$counts))
+edgefemale<-rep(0,ncol(edgedata0$counts))
+edgeseqpool<-rep(0,ncol(edgedata0$counts))
+for (i in 1:ncol(edgedata0$counts)){
+  edgetreatment[i]<-as.character(experiment[experiment$sample==colnames(edgedata0$counts)[i],]$treatment[1])
+  edgemale[i]<-as.character(experiment[experiment$sample==colnames(edgedata0$counts)[i],]$male[1])
+  edgefemale[i]<-as.character(experiment[experiment$sample==colnames(edgedata0$counts)[i],]$female[1])
+  edgeseqpool[i]<-as.character(experiment[experiment$sample==colnames(edgedata0$counts)[i],]$seqpool[1])
+}
+
+edgedesign<-model.matrix(~edgetreatment)
+
+#Make new DGEList, normalize by library size, and estimate dispersion allowing possible trend with average count size.
+edgedata0<-calcNormFactors(edgedata0)
+edgedata0<-estimateGLMCommonDisp(edgedata0,edgedesign)
+edgedata0<-estimateGLMTrendedDisp(edgedata0,edgedesign) 
+edgedata0<-estimateGLMTagwiseDisp(edgedata0,edgedesign)
+
+#MDS plot.
+par(mar=c(5.1, 4.1, 4.1, 8.1), xpd=TRUE)
+plotMDS(edgedata0,pch=19,col=as.numeric(as.factor(edgetreatment)))
+legend(title="Treatment",inset=c(-0.15,0),"topright",legend=levels(as.factor(edgetreatment)),pch=19,col=1:nlevels(as.factor(edgetreatment)))
+
+par(mar=c(5.1, 4.1, 4.1, 8.1), xpd=TRUE)
+plotMDS(edgedata0,pch=19,col=as.numeric(as.factor(edgemale)))
+legend(title="Male",inset=c(-0.15,0),"topright",legend=levels(as.factor(edgemale)),pch=19,col=1:nlevels(as.factor(edgemale)))
+
+par(mar=c(5.1, 4.1, 4.1, 8.1), xpd=TRUE)
+plotMDS(edgedata0,pch=19,col=as.numeric(as.factor(edgefemale)))
+legend(title="Female",inset=c(-0.15,0),"topright",legend=levels(as.factor(edgefemale)),pch=19,col=1:nlevels(as.factor(edgefemale)))
+
+par(mar=c(5.1, 4.1, 4.1, 8.1), xpd=TRUE)
+plotMDS(edgedata0,pch=19,col=as.numeric(as.factor(edgeseqpool)))
+legend(title="SeqPool",inset=c(-0.15,0),"topright",legend=levels(as.factor(edgeseqpool)),pch=19,col=1:nlevels(as.factor(edgeseqpool)))
+
+par(mar=c(5.1, 4.1, 4.1, 8.1), xpd=TRUE)
+plotMDS(edgedata0,pch=19,col=as.numeric(as.factor(gsub("-.*","",colnames(edgedata0)))))
+legend(title="Couple",inset=c(-0.15,0),"topright",legend=levels(as.factor(gsub("-.*","",colnames(edgedata0)))),pch=19,col=1:nlevels(as.factor(gsub("-.*","",colnames(edgedata0)))))
+
+#Biological coefficient of variation plot.
+plotBCV(edgedata0,cex=0.4,main="edgeR: Biological coefficient of variation (BCV) vs abundance")
+
+#Fit the model, testing the coefficient for the treated vs untreated comparison.
+edgefit<-glmFit(edgedata0,edgedesign)
+edgefit<-glmLRT(edgefit)
+
+#Make a table of results. In EdgeR FDR=Benjamini-Hochberg.
+edgetable<-topTags(edgefit,n=nrow(edgedata0))$table
+edgetable<-edgetable[order(edgetable$FDR),]
+edgetable[edgetable$FDR<=0.05,]
+
+#~MA plot.
+with(edgetable, plot(logCPM, logFC, pch=20, main="edgeR: Fold change vs abundance"))
+with(subset(edgetable, FDR<=0.05), points(logCPM, logFC, pch=20, col="red"))
+abline(h=c(-1,1), col="blue")
+```
+
+```{r}
+edgersig<-edgetable[edgetable$FDR<=0.05,]
+edgersig$genes<-as.factor(edgersig$genes)
+nrow(edgersig)
+edgersig
+edgersig$genename<-"Null"
+edgersig
+
+#setup parallel backend to use many processors
+cores<-detectCores()
+cl<-makeCluster(cores[1]-1) #not to overload your computer
+registerDoParallel(cl)
+
+found<-0
+noname<-0
+notfound<-0
+multiple<-0
+foreach(i=1:nlevels(edgersig$genes)) %do% {
+  gname<-droplevels(subset(genenames,Gene.stable.ID==levels(edgersig$genes)[i]))
+  if(nrow(gname)==0){
+    notfound<-notfound+1
+    print(paste0("Gene #",i," (",levels(edgersig$genes)[i],") was not found."))
+    edgersig[edgersig$genes==levels(edgersig$genes)[i],7]<-as.character(levels(edgersig$genes)[i])
+  }else{
+    if(nlevels(gname$Gene.name)==1){
+      found<-found+1
+      if(as.character(gname[1,2])==""){
+        noname<-noname+1
+        edgersig[edgersig$genes==levels(edgersig$genes)[i],7]<-as.character(levels(edgersig$genes)[i])
+      }else{
+        edgersig[edgersig$genes==levels(edgersig$genes)[i],7]<-as.character(gname[1,2])
+      }
+    }else{
+      multiple<-multiple+1
+      print(paste0("Gene #",i," (",levels(edgersig$genes)[i],") has ",nlevels(gname$Gene.name)," matches."))
+      edgersig[edgersig$genes==levels(edgersig$genes)[i],7]<-"MULTIPLE"
+    }
+  }
+}
+edgersig$genename<-as.factor(edgersig$genename)
+edgersig
+
+#write.table(edgetable,file="edger-results.txt",sep='\t',quote=FALSE)
+#write.table(edgersig,file="edger-results-significant.txt",sep='\t',quote=FALSE)
+```
+
+```{r eval=FALSE}
+write.table(edgetable,file="edger-results.txt",sep='\t',quote=FALSE)
+write.table(edgersig,file="edger-results-significant.txt",sep='\t',quote=FALSE)
+```
+
+```{r, fig.height=4, fig.width=5}
+#Save MDS plot of females.
+femalecolors<-c("blue","brown4","darkblue","darkcyan","darkgoldenrod2",
+                "burlywood1","cornflowerblue","red","chartreuse","darkgrey")
+#pdf("article3-plots/article3-mdsplot-female.pdf",width=12,height=12,pointsize=20)
+par(mar=c(5.1, 4.1, 4.1, 5.1), xpd=TRUE)
+plotMDS(edgedata0,pch=19,col=femalecolors[as.numeric(as.factor(edgefemale))])
+legend(title="Female",inset=c(-0.15,0),"topright",
+       legend=levels(as.factor(edgefemale)),pch=19,
+       col=femalecolors)
+#dev.off()
+```
+
+##### **Run EdgeR with fixed treatment and female IDs.**
+```{r, fig.height=4, fig.width=5}
+edgedata02<-DGEList(counts=data3.80,genes=rownames(data3.80))
+dim(edgedata02)
+head(edgedata02$counts)
+
+edgedata02<-calcNormFactors(edgedata02,method="TMM")
+
+edgetreatment2<-rep(0,ncol(edgedata02$counts))
+edgemale2<-rep(0,ncol(edgedata02$counts))
+edgefemale2<-rep(0,ncol(edgedata02$counts))
+edgeseqpool2<-rep(0,ncol(edgedata02$counts))
+for (i in 1:ncol(edgedata02$counts)){
+  edgetreatment2[i]<-as.character(experiment[experiment$sample==colnames(edgedata02$counts)[i],]$treatment[1])
+  edgemale2[i]<-as.character(experiment[experiment$sample==colnames(edgedata02$counts)[i],]$male[1])
+  edgefemale2[i]<-as.character(experiment[experiment$sample==colnames(edgedata02$counts)[i],]$female[1])
+  edgeseqpool2[i]<-as.character(experiment[experiment$sample==colnames(edgedata02$counts)[i],]$seqpool[1])
+}
+
+edgedesign2<-model.matrix(~edgetreatment2+edgefemale2)
+
+#Make new DGEList, normalize by library size, and estimate dispersion allowing possible trend with average count size.
+edgedata02<-calcNormFactors(edgedata02)
+edgedata02<-estimateGLMCommonDisp(edgedata02,edgedesign2)
+edgedata02<-estimateGLMTrendedDisp(edgedata02,edgedesign2) 
+edgedata02<-estimateGLMTagwiseDisp(edgedata02,edgedesign2)
+
+#Biological coefficient of variation plot.
+#pdf("edger-results2-bcvplot.pdf",width=12,height=12,pointsize=20)
+plotBCV(edgedata02,cex=0.4,main="edgeR: Biological coefficient of variation (BCV) vs abundance")
+#dev.off()
+
+#Fit the model, testing the coefficient for the treated vs untreated comparison.
+edgefit2<-glmFit(edgedata02,edgedesign2)
+edgefit2<-glmLRT(edgefit2)
+
+#Make a table of results. In EdgeR FDR=Benjamini-Hochberg.
+edgetable2<-topTags(edgefit2,n=nrow(edgedata02))$table
+edgetable2<-edgetable2[order(edgetable2$FDR),]
+edgetable2[edgetable2$FDR<=0.05,]
+
+#~MA plot.
+#pdf("edger-results2-volcanoplot.pdf",width=12,height=12,pointsize=20)
+with(edgetable2, plot(logCPM, logFC, pch=20, main="edgeR: Fold change vs abundance"))
+with(subset(edgetable2, FDR<=0.05), points(logCPM, logFC, pch=20, col="red"))
+abline(h=c(-1,1), col="blue")
+#dev.off()
+```
+
+```{r}
+#edgetable2genelist<-c(edgetable2$genes)
+#write.table(edgetable2genelist,file="edger-results2.80-genelist-orderedbypadjust.txt",sep='\t',quote=FALSE,row.names=FALSE,col.names=FALSE)
+```
+
+```{r}
+edgersig2<-edgetable2[edgetable2$FDR<=0.05,]
+edgersig2$genes<-as.factor(edgersig2$genes)
+nrow(edgersig2)
+edgersig2
+edgersig2$genename<-"Null"
+edgersig2
+
+#setup parallel backend to use many processors
+cores<-detectCores()
+cl<-makeCluster(cores[1]-1) #not to overload your computer
+registerDoParallel(cl)
+
+found<-0
+noname<-0
+notfound<-0
+multiple<-0
+foreach(i=1:nlevels(edgersig2$genes)) %do% {
+  gname<-droplevels(subset(genenames,Gene.stable.ID==levels(edgersig2$genes)[i]))
+  if(nrow(gname)==0){
+    notfound<-notfound+1
+    print(paste0("Gene #",i," (",levels(edgersig2$genes)[i],") was not found."))
+    edgersig2[edgersig2$genes==levels(edgersig2$genes)[i],7]<-as.character(levels(edgersig2$genes)[i])
+  }else{
+    if(nlevels(gname$Gene.name)==1){
+      found<-found+1
+      if(as.character(gname[1,2])==""){
+        noname<-noname+1
+        edgersig2[edgersig2$genes==levels(edgersig2$genes)[i],7]<-as.character(levels(edgersig2$genes)[i])
+      }else{
+        edgersig2[edgersig2$genes==levels(edgersig2$genes)[i],7]<-as.character(gname[1,2])
+      }
+    }else{
+      multiple<-multiple+1
+      print(paste0("Gene #",i," (",levels(edgersig2$genes)[i],") has ",nlevels(gname$Gene.name)," matches."))
+      edgersig2[edgersig2$genes==levels(edgersig2$genes)[i],7]<-"MULTIPLE"
+    }
+  }
+}
+edgersig2$genename<-as.factor(edgersig2$genename)
+edgersig2
+
+#write.table(edgetable2,file="edger-results2.80.txt",sep='\t',quote=FALSE)
+#write.table(edgersig2,file="edger-results2.80-significant.txt",sep='\t',quote=FALSE)
+```
+
+```{r, fig.height=4, fig.width=5}
+#Genes that are common between EdgeR and the GLMM model.
+edgersig2[edgersig2$genes %in% as.factor(c("ENSDARG00000083325","ENSDARG00000105139","ENSDARG00000078473",
+                 "ENSDARG00000083738","ENSDARG00000098085","ENSDARG00000098933",
+                 "ENSDARG00000099175","ENSDARG00000101391","ENSDARG00000102504",
+                 "ENSDARG00000103481","ENSDARG00000104159","ENSDARG00000058203")),]
+```
+
+```{r, fig.height=4, fig.width=5}
+#Genes that are common to EdgeR and DESeq2.
+deseq2siggenes<-as.factor(deseq2sig2$genes)
+edgersiggenes<-as.factor(edgersig2$genes)
+deseq2sig2[deseq2sig2$genes %in% edgersiggenes,]
+edgersig2[edgersig2$genes %in% deseq2siggenes,]
+deseq2edgercommonsignificantgenes<-edgersig2[edgersig2$genes %in% deseq2siggenes,c(1,7)]
+head(deseq2edgercommonsignificantgenes)
+```
+```{r, fig.height=4, fig.width=5}
+#Number of differentially expressed genes that are common to EdgeR and DESEq2.
+nrow(deseq2edgercommonsignificantgenes)
+```
+
+```{r, fig.height=4, fig.width=4}
+#Volcano plot of genes commonly differentially expressed between EdgeR and DESeq2.
+deseq2edgercommonsignificantgeneslistedger<-edgersig2[edgersig2$genes %in% deseq2siggenes,]
+deseq2edgercommonsignificantgeneslistdeseq2<-deseq2sig2[deseq2sig2$genes %in% edgersiggenes,]
+head(deseq2edgercommonsignificantgeneslistedger)
+head(deseq2edgercommonsignificantgeneslistdeseq2)
+
+#Volcano plot EdgeR.
+#pdf("edgerdeseq2.80-commonDEgenes-volcanoplot.pdf",width=12,height=12,pointsize=20)
+with(deseq2edgercommonsignificantgeneslistedger, plot(logCPM, logFC, pch=20, main="edgeR: LogFoldChange vs LogCPM",ylim=c(-8,8),xlim=c(0,15)))
+with(subset(deseq2edgercommonsignificantgeneslistedger, FDR<=0.05), points(logCPM, logFC, pch=20, col="red"))
+abline(h=c(-1,1), col="blue")
+library("calibrate")
+with(head(deseq2edgercommonsignificantgeneslistedger,n=10), textxy(logCPM, logFC, labs=genename, offset=0.2, cex=.8, pos=3))
+with(deseq2edgercommonsignificantgeneslistedger[deseq2edgercommonsignificantgeneslistedger$genes %in% head(deseq2edgercommonsignificantgeneslistdeseq2,n=10)$genes,], textxy(logCPM, logFC, labs=genename, offset=0.2, cex=.8, pos=3))
+with(deseq2edgercommonsignificantgeneslistedger[deseq2edgercommonsignificantgeneslistedger$genes %in% head(deseq2edgercommonsignificantgeneslistdeseq2,n=10)$genes,], textxy(logCPM, logFC, labs=genename, offset=0.2, cex=.8, pos=3))
+with(subset(deseq2edgercommonsignificantgeneslistedger, abs(logFC)>1), points(logCPM, logFC, pch=20, col="blue"))
+#dev.off()
+
+#Volcano plot DESeq2.
+#pdf("edger-results2-volcanoplot.pdf",width=12,height=12,pointsize=20)
+#with(deseq2edgercommonsignificantgeneslistdeseq2, plot(baseMean, log2FoldChange, pch=20, main="DESeq2: Mean of Normalized Counts vs Log2FoldChange", ylim=c(-10,10)))
+#with(subset(edgetable2, FDR<=0.05), points(logCPM, logFC, pch=20, col="red"))
+#abline(h=c(-1,1), col="blue")
+#library("calibrate")
+#with(head(deseq2sig2,n=10), textxy(log2FoldChange, -log10(pvalue), labs=genename, cex=.8))
+#dev.off()
+
+#####################
+
+#with(deseq2sig2, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot", xlim=c(-2.5,2)))
+##Add colored points: red if padj<0.05, orange of log2FC>1, green if both).
+#with(subset(deseq2sig2, padj<.05 ), points(log2FoldChange, -log10(pvalue), pch=20, col="red"))
+#with(subset(deseq2sig2, abs(log2FoldChange)>1), points(log2FoldChange, -log10(pvalue), pch=20, col="orange"))
+#with(subset(deseq2sig2, padj<.05 & abs(log2FoldChange)>1), points(log2FoldChange, -log10(pvalue), pch=20, col="green"))
+##Label points with the textxy function from the calibrate plot
+#library("calibrate")
+#with(subset(deseq2sig2, padj<.05 & abs(log2FoldChange)>1), textxy(log2FoldChange, -log10(pvalue), labs=genename, cex=.8))
+```
+
+```{r, fig.height=4, fig.width=4}
+#Volcano plot of genes commonly differentially expressed between EdgeR and DESeq2.
+deseq2edgercommonsignificantgeneslistedger<-edgersig2[edgersig2$genes %in% deseq2siggenes,]
+deseq2edgercommonsignificantgeneslistdeseq2<-deseq2sig2[deseq2sig2$genes %in% edgersiggenes,]
+head(deseq2edgercommonsignificantgeneslistedger)
+head(deseq2edgercommonsignificantgeneslistdeseq2)
+
+#Volcano plot EdgeR.
+#pdf("edgerdeseq2.80-allandcommonDEgenes-volcanoplot.pdf",width=12,height=12,pointsize=20)
+with(edgetable2, plot(logCPM, logFC, pch=20, main="edgeR: LogFoldChange vs LogCPM",ylim=c(-8,8),xlim=c(0,15)))
+with(subset(edgersig2, FDR<=0.05), points(logCPM, logFC, pch=20, col="red"))
+abline(h=c(-1,1), col="blue")
+library("calibrate")
+with(head(deseq2edgercommonsignificantgeneslistedger,n=10), textxy(logCPM, logFC, labs=genename, offset=0.2, cex=.8, pos=3))
+with(edgersig2[edgersig2$genes %in% head(deseq2edgercommonsignificantgeneslistedger,n=10)$genes,], textxy(logCPM, logFC, labs=genename, offset=0.2, cex=.8, pos=3))
+with(edgersig2[edgersig2$genes %in% head(deseq2edgercommonsignificantgeneslistdeseq2,n=10)$genes,], textxy(logCPM, logFC, labs=genename, offset=0.2, cex=.8, pos=3))
+with(subset(edgersig2, abs(logFC)>1), points(logCPM, logFC, pch=20, col="blue"))
+#dev.off()
+
+#Volcano plot DESeq2.
+#pdf("edger-results2-volcanoplot.pdf",width=12,height=12,pointsize=20)
+#with(deseq2edgercommonsignificantgeneslistdeseq2, plot(baseMean, log2FoldChange, pch=20, main="DESeq2: Mean of Normalized Counts vs Log2FoldChange", ylim=c(-10,10)))
+#with(subset(edgetable2, FDR<=0.05), points(logCPM, logFC, pch=20, col="red"))
+#abline(h=c(-1,1), col="blue")
+#library("calibrate")
+#with(head(deseq2sig2,n=10), textxy(log2FoldChange, -log10(pvalue), labs=genename, cex=.8))
+#dev.off()
+
+#####################
+
+#with(deseq2sig2, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot", xlim=c(-2.5,2)))
+##Add colored points: red if padj<0.05, orange of log2FC>1, green if both).
+#with(subset(deseq2sig2, padj<.05 ), points(log2FoldChange, -log10(pvalue), pch=20, col="red"))
+#with(subset(deseq2sig2, abs(log2FoldChange)>1), points(log2FoldChange, -log10(pvalue), pch=20, col="orange"))
+#with(subset(deseq2sig2, padj<.05 & abs(log2FoldChange)>1), points(log2FoldChange, -log10(pvalue), pch=20, col="green"))
+##Label points with the textxy function from the calibrate plot
+#library("calibrate")
+#with(subset(deseq2sig2, padj<.05 & abs(log2FoldChange)>1), textxy(log2FoldChange, -log10(pvalue), labs=genename, cex=.8))
+```
+
+```{r eval=FALSE}
+write.table(edgetable2,file="edger-results2.80.txt",sep='\t',quote=FALSE)
+write.table(edgersig2,file="edger-results2.80-significant.txt",sep='\t',quote=FALSE)
+write.table(deseq2edgercommonsignificantgenes,file="deseq2edger-results2.80-commonsignificantgenes.txt",sep='\t',quote=FALSE,row.names=FALSE)
+```
+
+##### **Normalize data.**
+```{r eval=FALSE}
+data3<-read.csv(file="article3-matrix-data3.txt",header=TRUE,sep="\t")
+```
+
+```{r}
+#data3<-read.csv(file="article3-matrix-data3.txt",header=TRUE,sep="\t")
+#Normalization function for data3. Normalization types: normtype=c("none","tmm","rle","upperquartile","medd","medl","shorth","quantile","libsize").
+normfunc<-function(normtype){
+  if(normtype=="none"){
+    #cat("Computing Raw data ...\n")
+    data4normtype<-"None"
+    data4<<-data3
+  }
+  if(normtype=="tmm"){
+    #cat("Computing TMM normalization ...\n")
+    data4normtype<-"TMM"
+    data4<<-as.data.frame(edgeR::cpm(edgeR::calcNormFactors(DGEList(data3),method="TMM"),normalized.lib.sizes=T))
+  }
+  if(normtype=="rle"){
+    #cat("Computing RLE normalization ...\n")
+    data4normtype<-"RLE"
+    data4<<-as.data.frame(edgeR::cpm(edgeR::calcNormFactors(DGEList(data3),method="RLE"),normalized.lib.sizes=T))
+  }
+  if(normtype=="upperquartile"){
+    #cat("Computing Upper Quartile normalization ...\n")
+    data4normtype<-"UpperQuartile"
+    data4<<-as.data.frame(edgeR::cpm(edgeR::calcNormFactors(DGEList(data3),method="upperquartile"),normalized.lib.sizes=T))
+  }
+  if(normtype=="medd"){
+    #cat("Computing Median (DESeq2) normalization ...\n")
+    data4normtype<-"MedianDESeq2"
+    #CHANGE DESIGN HERE
+    dedata<-DESeq2::DESeqDataSetFromMatrix(data3,experiment,design=~treatment)
+    data4<<-as.data.frame(DESeq2::counts(DESeq2::estimateSizeFactors(dedata,locfunc=stats::median),normalized=T))
+  }
+  if(normtype=="medl"){
+    #cat("Computing Median (Limma) normalization ...\n")
+    data4normtype<-"MedianLimma"
+    data4<<-as.data.frame(limma::normalizeMedianAbsValues(data3))
+  }
+  if(normtype=="shorth"){
+    #cat("Computing ShortH normalization ...\n")
+    data4normtype<-"ShortH"
+    #CHANGE DESIGN HERE
+    dedata<-DESeq2::DESeqDataSetFromMatrix(data3,experiment,design=~treatment)
+    data4<<-as.data.frame(DESeq2::counts(DESeq2::estimateSizeFactors(dedata,locfunc=genefilter::shorth),normalized=T))
+  }
+  if(normtype=="quantile"){
+    #cat("Computing Quantile normalization ...\n")
+    data4normtype<-"Quantile"
+    data4<<-as.data.frame(limma::normalizeQuantiles(data3))
+  }
+  if(normtype=="libsize"){
+    #cat("Computing Total Count normalization ...\n")
+    data4normtype<-"TotalCount"
+    #data4<-as.data.frame(mapply("/",data3,as.numeric(colSums(data3)))*(10^6))
+    datalibsize<-as.data.frame(t(t(data3)/as.numeric(colSums(data3)))*(10^6))
+    rownames(datalibsize)<-rownames(data3)
+    data4<<-datalibsize
+  }
+}
+normfunc("tmm")
+head(data4)
+#write.table(data4,file="article3-matrix-data4.txt",sep="\t")
+```
+
+```{r eval=FALSE}
+write.table(data4,file="article3-matrix-data4.txt",sep="\t")
+```
+
+```{r}
+#Calculate library sizes and normalization factors of each sample.
+data3normfactors<-edgeR::calcNormFactors(DGEList(data3),method="TMM")
+head(data3normfactors$samples)
+```
+
+##### **Look at data distribution.**
+```{r, fig.height=5, fig.width=3}
+par(mfrow=c(3,1)) #Three plots per row.
+fitdistrplus::descdist(melt(data3)$value,discrete=TRUE,boot=NULL) #Before TMM normalization.
+fitdistrplus::descdist(melt(data4)$value,discrete=FALSE,boot=NULL) #After TMM normalization.
+fitdistrplus::descdist(round(melt(data4)$value),discrete=TRUE,boot=NULL) #After rounding TMM normalization.
+```
+
+##### **Fit the rounded normalized data to the negative binomial distribution.**
+```{r, fig.height=4, fig.width=5}
+#?fitdist
+data4fitnb<-fitdistrplus::fitdist(data=round(melt(data4)$value),distr="nbinom",method="mle")
+par(mfrow=c(1,1))
+plot(data4fitnb)
+summary(data4fitnb)
+```
+
+##### **Transform the normalized dataset into a complete matrix including metadata.**
+```{r eval=FALSE}
+data3<-read.csv(file="article3-matrix-data3.txt",header=TRUE,sep="\t")
+data4<-read.csv(file="article3-matrix-data4.txt",header=TRUE,sep="\t")
+```
+
+```{r}
+#data3<-read.csv(file="article3-matrix-data3.txt",header=TRUE,sep="\t")
+#data4<-read.csv(file="article3-matrix-data4.txt",header=TRUE,sep="\t")
+data5count<-data3
+data5norm<-data4
+#head(data5count)
+#head(data5norm)
+
+#Build initial data frame.
+#?sub
+#?gsub
+#?grep
+samplename<-as.character(colnames(data5count)[1])
+meta<-subset(experiment,sample==as.character(samplename))
+data5<-as.data.frame(rownames(data5norm)) ; colnames(data5)<-"gene"
+data5$count<-data5count[,1]
+data5$normcount<-data5norm[,1]
+data5$sample<-as.factor(samplename)
+data5$treatment<-meta$treatment[1]
+data5$male<-meta$male[1]
+data5$female<-meta$female[1]
+data5$seqpool<-meta$seqpool[1]
+#data5$rawfile<-meta$files[1]
+head(data5)
+summary(data5)
+
+#Add the remaining data.
+for (i in 2:ncol(data5norm)){
+  samplename<-as.character(colnames(data5count)[i])
+  meta<-subset(experiment,sample==as.character(samplename))
+  tempfile<-as.data.frame(rownames(data5norm));colnames(tempfile)<-"gene"
+  tempfile$count<-data5count[,i]
+  tempfile$normcount<-data5norm[,i]
+  tempfile$sample<-as.factor(samplename)
+  tempfile$treatment<-meta$treatment[1]
+  tempfile$male<-meta$male[1]
+  tempfile$female<-meta$female[1]
+  tempfile$seqpool<-meta$seqpool[1]
+  #tempfile$rawfile<-meta$files[1]
+  data5<-rbind(data5,tempfile)
+}
+head(data5)
+colnames(data5)
+nrow(data5)
+ncol(data5)
+summary(data5)
+str(data5)
+range(data5$count)
+range(data5$normcount)
+```
+
+```{r}
+#Add library sizes and normalization factors of each sample.
+tempdata3<-data3normfactors$samples
+tempdata3$sample<-as.factor(as.character(rownames(tempdata3))) #Add column with sample names.
+#head(tempdata3)
+#nrow(tempdata3)
+#levels(tempdata3$sample)
+#We call the product of the original library size and the scaling factor the effective library size.
+#The effective library size replaces the original library size in all downsteam analyses.
+data5$libsize<-NA #Create new column for library size in data5.
+data5$normfactor<-NA #Create new column for normalization factor in data5.
+data5$effectivelibsize<-NA #Create new column for normalization factor in data5.
+#head(data5)
+#levels(data5$sample)
+for (i in levels(data5$sample)){
+  data5[data5$sample==i,9]<-tempdata3[tempdata3$sample==i,2] #Add library size.
+  data5[data5$sample==i,10]<-tempdata3[tempdata3$sample==i,3] #Add normalization factor.
+  data5[data5$sample==i,11]<-tempdata3[tempdata3$sample==i,2]*tempdata3[tempdata3$sample==i,3] #Add effective library size.
+}
+head(data5)
+colnames(data5)
+```
+
+```{r eval=FALSE}
+#Add column with gene names.
+#Import file with Ensembl ID and Gene Names.
+geneinfo<-read.csv(file="ensembl-zebrafish-genes.txt",header=TRUE,sep=",")
+genenames<-geneinfo[,c(1,6)]
+#head(genenames)
+head(genenames)
+data5$genename<-0
+
+#Add column to data5.
+#setup parallel backend to use many processors
+cores<-detectCores()
+cl<-makeCluster(cores[1]-1) #not to overload your computer
+registerDoParallel(cl)
+
+found<-0
+noname<-0
+notfound<-0
+multiple<-0
+foreach(i=1:nlevels(data5$gene)) %do% {
+  if((i/1000-round(i/1000))==0){
+    print(paste0("Adding gene #",i))
+  }
+  gname<-droplevels(subset(genenames,Gene.stable.ID==levels(data5$gene)[i]))
+  if(nrow(gname)==0){
+    notfound<-notfound+1
+    print(paste0("Gene #",i," (",levels(data5$gene)[i],") was not found."))
+    data5[data5$gene==levels(data5$gene)[i],12]<-as.character(levels(data5$gene)[i])
+  }else{
+    if(nlevels(gname$Gene.name)==1){
+      found<-found+1
+      if(as.character(gname[1,2])==""){
+        noname<-noname+1
+        data5[data5$gene==levels(data5$gene)[i],12]<-as.character(levels(data5$gene)[i])
+      }else{
+        data5[data5$gene==levels(data5$gene)[i],12]<-as.character(gname[1,2])
+      }
+    }else{
+      multiple<-multiple+1
+      print(paste0("Gene #",i," (",levels(data5$gene)[i],") has ",nlevels(gname$Gene.name)," matches."))
+      data5[data5$gene==levels(data5$gene)[i],12]<-"MULTIPLE"
+    }
+  }
+}
+data5$genename<-as.factor(data5$genename)
+head(data5)
+
+#Number of Ensembl IDs that match more than one gene name.
+print(paste0("Total number of genes = ",nlevels(data5$gene)))
+print(paste0("Number of genes found = ",found))
+print(paste0("Number of genes not found = ",notfound))
+print(paste0("Number of genes found with no name = ",noname))
+print(paste0("Number of genes with multiple matches = ",multiple))
+
+#write.table(data5,file="article3-matrix-data5.txt",sep="\t")
+```
+
+```{r}
+data5<-read.csv(file="article3-matrix-data5.txt",header=TRUE,sep="\t")
+str(data5$genename)
+nlevels(data5$genename)
+head(data5)
+```
+
+```{r, fig.height=5, fig.width=3}
+#data5<-read.csv(file="article3-matrix-data5.txt",header=TRUE,sep="\t")
+#Compare raw counts with normalized counts and rounded normalized counts.
+par(mfrow=c(3,1)) #Three plots per row.
+#?plot
+plot(data5$count,data5$normcount)
+plot(data5$count,round(data5$normcount))
+plot(data5$normcount,round(data5$normcount))
+```
+
+##### **Test for differential expression of an individual gene using the lme4 package.**
+*Statistical model (with random intercepts only):*
+
+$$C_{m,f,p}^{t}=\beta_0+M_{0_m}+F_{0_f}+P_{0_p}+\beta_1\cdot T_i+\epsilon_{m,f,p}$$
+
+##### **Look at the stats for a single gene using lme4::glmer.nb.**
+```{r eval=FALSE}
+data5<-read.csv("article3-matrix-data5.txt",header=TRUE,sep="\t")
+```
+
+```{r, fig.height=4, fig.width=5}
+#data5<-read.csv("article3-matrix-data5.txt",header=TRUE,sep="\t")
+#Genes that are differentially expressed when the model includes only treatment (fixed effect) with DESeq2.
+#ENSDARG00000101373
+#ENSDARG00000031768
+#ENSDARG00000104956
+#ENSDARG00000052747 (GPatch3)
+#ENSDARG00000099585
+#ENSDARG00000104026
+
+#Differentially expressed genes:
+selectedgene<-"ENSDARG00000083325" #snoU85 (Up in LOW).
+#selectedgene<-"ENSDARG00000083738" #SCARNA13 (Up in LOW).
+#selectedgene<-"ENSDARG00000098085" #Metazoa_SRP (Up in LOW).
+#selectedgene<-"ENSDARG00000098933" #Metazoa_SRP (Up in LOW).
+#selectedgene<-"ENSDARG00000099175" #hmgb1a (Down in LOW).
+#selectedgene<-"ENSDARG00000101391" #Metazoa_SRP (Up in LOW): Very low read counts in most couples. Exclude it?
+#selectedgene<-"ENSDARG00000102504" #Metazoa_SRP (Up in LOW).
+#selectedgene<-"ENSDARG00000103481" #Metazoa_SRP (Up in LOW).
+#selectedgene<-"ENSDARG00000104159" #Metazoa_SRP (Up in LOW): Very low read counts in most couples. Exclude it?
+#selectedgene<-"ENSDARG00000105139" #Metazoa_SRP (Up in LOW): seqpool and male variance is zero. Why?
+#selectedgene<-"ENSDARG00000078473" #nucks1a (Downregulated in LOW).
+#selectedgene<-"ENSDARG00000058203" #smc1al (non-DE).
+
+indgene<-droplevels(subset(x=data5,gene==selectedgene))
+
+#Create model.
+#?lmer
+#?glmer.nb
+#glmmmodel<-glmer.nb(round(count)~treatment+(1|treatment:male)+(1|female),data=indgene,REML=T)
+glmmmodel<-glmer.nb(round(normcount)~treatment+(1|male)+(1|female)+(1|seqpool),data=indgene,control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=10000000))) #Control: change the optimizer and max number of iterations to avoid warning message.
+#The term (1|var1/var2/var3) expands to (1|var1)+(1|var1:var2)+(1|var1:var2:var3), where : denotes an interaction.
+
+#summary(glmmodel)
+#Anova(glmmodel,type="III")
+modeloutput<-summary(glmmmodel)
+modeloutput
+anovaoutput<-Anova(glmmmodel,type="III")
+anovaoutput
+capture.output(list(selectedgene,modeloutput,anovaoutput),file=paste0("demodeloutput-",selectedgene,".txt"))
+#Anova(model,type="III",p.adjust.method="BH")
+#Anova(model,type="III")$Pr[2] #Collect p-value.
+#Adjust P-values for Multiple Comparisons (p.adjust.method): "holm", "hochberg", "hommel", "bonferroni", "BH", "BY", "fdr", "none".
+
+#Some basic plots.
+#?plot
+#?bloxplot
+#?legend
+#?ifelse
+#Plot residuals of an individual gene.
+plot(glmmmodel,col=ifelse(indgene$treatment=="LOW","green","blue"),pch=19,main=paste0(selectedgene))
+
+#Boxplot per treatment of an individual gene.
+boxplot(indgene$count~indgene$treatment,col=c("blue","green"),xlab="Treatment",ylab="Read count",main=paste0(selectedgene))
+
+#Plot read count of an individual gene for each sample.
+#plot(sort(indgene$count),col=ifelse(indgene$treatment=="LOW","green","blue"),pch=c(19,19),xlab="Sample index",ylab="Read count")
+#legend("right",pch=c(19,19),col=c("green","blue"),c("LOW","HIGH"))
+
+#Plot fitted model.
+#plot(sort(fitted(glmmmodel)),col=ifelse(indgene$treatment=="LOW","green","blue"),pch=19,xlab="Sample index",ylab="Fitted model")
+#legend("right",pch=c(19,19),col=c("green","blue"),c("LOW","HIGH"))
+
+#Bivariate scatterplot.
+par(mfrow=c(2,1)) #Two plots per row.
+#?dotplot
+lattice::dotplot(count~treatment|female,groups=treatment,type="p",data=indgene,auto.key=F,xlab="Treatment",ylab="Read count",main=paste0(selectedgene)) #Only females are common between treatments, not males.
+lattice::dotplot(fitted(glmmmodel)~treatment|female,groups=treatment,type="p",data=indgene,auto.key=F,xlab="Treatment",ylab="Fitted values",main=paste0(selectedgene)) #Plot fitted values.
+#xyplot(count~treatment|female,groups=treatment,type="p",data=indgene,auto.key=F,xlab="Treatment",ylab="Read count") 
+#xyplot(fitted(model)~treatment|female,groups=treatment,type="p",data=indgene,auto.key=F,xlab="Treatment",ylab="Fitted values") 
+
+#Box-and-whisker plot.
+par(mfrow=c(2,1)) #Two plots per row.
+lattice::bwplot(count~treatment|female,groups=treatment,type="p",data=indgene,auto.key=F,xlab="Treatment",ylab="Read count",main=paste0(selectedgene)) #Only females are common between treatments, not males.
+lattice::bwplot(fitted(glmmmodel)~treatment|female,groups=treatment,type="p",data=indgene,auto.key=F,xlab="Treatment",ylab="Fitted values",main=paste0(selectedgene)) #Plot fitted values.
+
+#barchart(count~treatment|female,groups=treatment,type="p",data=indgene,auto.key=F,xlab="Treatment",ylab="Read count") #Only females are common between treatments, not males.
+#barchart(fitted(model)~treatment|female,groups=treatment,type="p",data=indgene,auto.key=F,xlab="Treatment",ylab="Fitted values") #Plot fitted values.
+
+#Plot intercepts.
+library(sjPlot)
+library(sjmisc)
+sjp.glmer(glmmmodel,type="re.qq") #Plot qq-plot of random effects.
+sjp.glmer(glmmmodel) #Plot random effects.
+sjp.glmer(glmmmodel,facet.grid=FALSE,sort.est="sort.all",y.offset=.4) #Ordered plots.
+sjp.glmer(glmmmodel,type="fe",show.ci=TRUE) #Plot fixed effects.
+sjp.glmer(glmmmodel,type="eff",show.ci=TRUE) #Plot marginal effects, adjusted for all predictors.
+sjp.glmer(glmmmodel,type="pred",vars="treatment") #Plot predicted values against response, only fixed effects or conditional on random intercept.
+sjp.glmer(glmmmodel,type="ri.slope",vars="treatment",show.ci=TRUE) #Plot probability curves for each covariate grouped by random intercepts.
+sjp.glmer(glmmmodel,type="fe.slope") #Plot probability curve of fixed effects.
+```
+
+```{r, fig.height=3, fig.width=5}
+#Plot multiple genes.
+#savepdf<-"FALSE" #Save plots as pdf instead of showing here.
+savepdf<-"F"
+#onepage="FALSE" #Plot all genes on the same page.
+onepage="F"
+
+#multiplegenes<-c("ENSDARG00000058203") #Test single gene (not statistically significant).
+multiplegenes<-c("ENSDARG00000083325","ENSDARG00000105139","ENSDARG00000078473",
+                 "ENSDARG00000083738","ENSDARG00000098085","ENSDARG00000098933",
+                 "ENSDARG00000099175","ENSDARG00000101391","ENSDARG00000102504",
+                 "ENSDARG00000103481","ENSDARG00000104159","ENSDARG00000058203",
+                 "ENSDARG00000089382", "ENSDARG00000104790")
+
+#Most significant gene using EdgeR and treatment+female as fixed effects: ENSDARG00000104790
+#Most significant gene using DESeq2 and treatment+female as fixed effects: ENSDARG00000087953
+
+#Function for violin plots.
+vioplot2<-function(x, ..., range = 1.5, h = NULL, ylim = NULL, names = NULL, 
+                      horizontal = FALSE, col = "magenta", border = "black", lty = 1, 
+                      lwd = 1, rectCol = "black", colMed = "white", pchMed = 19, 
+                      at, add = FALSE, wex = 1, drawRect = TRUE, side="both") 
+{
+  datas <- list(x, ...)
+  n <- length(datas)
+  if (missing(at)) 
+    at <- 1:n
+  upper <- vector(mode = "numeric", length = n)
+  lower <- vector(mode = "numeric", length = n)
+  q1 <- vector(mode = "numeric", length = n)
+  q2 <- vector(mode = "numeric", length = n)
+  q3 <- vector(mode = "numeric", length = n)
+  med <- vector(mode = "numeric", length = n)
+  base <- vector(mode = "list", length = n)
+  height <- vector(mode = "list", length = n)
+  baserange <- c(Inf, -Inf)
+  args <- list(display = "none")
+  radj <- ifelse(side == "right", 0, 1)
+  ladj <- ifelse(side == "left", 0, 1)
+  if (!(is.null(h))) 
+    args <- c(args, h = h)
+  med.dens <- rep(NA, n)
+  for (i in 1:n) {
+    data <- datas[[i]]
+    data.min <- min(data)
+    data.max <- max(data)
+    q1[i] <- quantile(data, 0.25)
+    q2[i] <- quantile(data, 0.5)
+    q3[i] <- quantile(data, 0.75)
+    med[i] <- median(data)
+    iqd <- q3[i] - q1[i]
+    upper[i] <- min(q3[i] + range * iqd, data.max)
+    lower[i] <- max(q1[i] - range * iqd, data.min)
+    est.xlim <- c(min(lower[i], data.min), max(upper[i], 
+                                               data.max))
+    smout <- do.call("sm.density", c(list(data, xlim = est.xlim), 
+                                     args))
+    med.dat <- do.call("sm.density", 
+                       c(list(data, xlim=est.xlim,
+                              eval.points=med[i], display = "none")))
+    med.dens[i] <- med.dat$estimate
+    hscale <- 0.4/max(smout$estimate) * wex
+    base[[i]] <- smout$eval.points
+    height[[i]] <- smout$estimate * hscale
+    med.dens[i] <- med.dens[i] * hscale
+    t <- range(base[[i]])
+    baserange[1] <- min(baserange[1], t[1])
+    baserange[2] <- max(baserange[2], t[2])
+  }
+  if (!add) {
+    xlim <- if (n == 1) 
+      at + c(-0.5, 0.5)
+    else range(at) + min(diff(at))/2 * c(-1, 1)
+    if (is.null(ylim)) {
+      ylim <- baserange
+    }
+  }
+  if (is.null(names)) {
+    label <- 1:n
+  }
+  else {
+    label <- names
+  }
+  boxwidth <- 0.05 * wex
+  if (!add) 
+    plot.new()
+  if (!horizontal) {
+    if (!add) {
+      plot.window(xlim = xlim, ylim = ylim)
+      axis(2)
+      axis(1, at = at, label = label)
+    }
+    box()
+    for (i in 1:n) {
+      polygon(x = c(at[i] - radj*height[[i]], rev(at[i] + ladj*height[[i]])), 
+              y = c(base[[i]], rev(base[[i]])), 
+              col = col, border = border, 
+              lty = lty, lwd = lwd)
+      if (drawRect) {
+        lines(at[c(i, i)], c(lower[i], upper[i]), lwd = lwd, 
+              lty = lty)
+        rect(at[i] - radj*boxwidth/2, 
+             q1[i], 
+             at[i] + ladj*boxwidth/2, 
+             q3[i], col = rectCol)
+        # median line segment
+        lines(x = c(at[i] - radj*med.dens[i], 
+                    at[i], 
+                    at[i] + ladj*med.dens[i]),
+              y = rep(med[i],3))
+      }
+    }
+  }
+  else {
+    if (!add) {
+      plot.window(xlim = ylim, ylim = xlim)
+      axis(1)
+      axis(2, at = at, label = label)
+    }
+    box()
+    for (i in 1:n) {
+      polygon(c(base[[i]], rev(base[[i]])), 
+              c(at[i] - radj*height[[i]], rev(at[i] + ladj*height[[i]])), 
+              col = col, border = border, 
+              lty = lty, lwd = lwd)
+      if (drawRect) {
+        lines(c(lower[i], upper[i]), at[c(i, i)], lwd = lwd, 
+              lty = lty)
+        rect(q1[i], at[i] - radj*boxwidth/2, q3[i], at[i] + 
+               ladj*boxwidth/2, col = rectCol)
+        lines(y = c(at[i] - radj*med.dens[i], 
+                    at[i], 
+                    at[i] + ladj*med.dens[i]),
+              x = rep(med[i],3))
+      }
+    }
+  }
+  invisible(list(upper = upper, lower = lower, median = med, 
+                 q1 = q1, q3 = q3))
+}
+require(vioplot)
+require(devtools)
+require(digest)
+
+#Plots.
+if(onepage=="TRUE"|onepage=="T"){
+  par(mfrow=c(4,3))#3 rows and 4 columns.
+}
+#pardefaultmar<-c(5.1,4.1,2.1,5.1)
+#par(xpd=T,mar=par()$mar+c(0,0,0,3))
+
+for(i in 1:length(multiplegenes)){
+  indgene<-droplevels(subset(x=data5,gene==multiplegenes[i]))
+  glmmmodel<-glmer.nb(round(normcount)~treatment+(1|male)+(1|female)+(1|seqpool),data=indgene,control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=10000000))) #Control: change the optimizer and max number of iterations to avoid warning message.
+#The term (1|var1/var2/var3) expands to (1|var1)+(1|var1:var2)+(1|var1:var2:var3), where : denotes an interaction.
+  indgene$fit<-fitted(glmmmodel)
+  
+  boxplotdataraw<-data.frame(
+    treatment=c(rep("LOW",4), rep("HIGH",4)), #4 samples per treatment per female.
+    F1=c(subset(indgene,female=="F1" & treatment=="LOW")$count,
+         subset(indgene,female=="F1" & treatment=="HIGH")$count),
+    F2=c(subset(indgene,female=="F2" & treatment=="LOW")$count,
+         subset(indgene,female=="F2" & treatment=="HIGH")$count),
+    F3=c(subset(indgene,female=="F3" & treatment=="LOW")$count,
+         subset(indgene,female=="F3" & treatment=="HIGH")$count),
+    F4=c(subset(indgene,female=="F4" & treatment=="LOW")$count,
+         subset(indgene,female=="F4" & treatment=="HIGH")$count),
+    F5=c(subset(indgene,female=="F5" & treatment=="LOW")$count,
+         subset(indgene,female=="F5" & treatment=="HIGH")$count),
+    F6=c(subset(indgene,female=="F6" & treatment=="LOW")$count,
+         subset(indgene,female=="F6" & treatment=="HIGH")$count),
+    F7=c(subset(indgene,female=="F7" & treatment=="LOW")$count,
+         subset(indgene,female=="F7" & treatment=="HIGH")$count),
+    F8=c(subset(indgene,female=="F8" & treatment=="LOW")$count,
+         subset(indgene,female=="F8" & treatment=="HIGH")$count),
+    F9=c(subset(indgene,female=="F9" & treatment=="LOW")$count,
+         subset(indgene,female=="F9" & treatment=="HIGH")$count),
+    F10=c(subset(indgene,female=="F10" & treatment=="LOW")$count,
+          subset(indgene,female=="F10" & treatment=="HIGH")$count)
+  )
+  
+  boxplotdatafit<-data.frame(
+    treatment=c(rep("LOW",4), rep("HIGH",4)), #4 samples per treatment per female.
+    F1=c(subset(indgene,female=="F1" & treatment=="LOW")$fit,
+         subset(indgene,female=="F1" & treatment=="HIGH")$fit),
+    F2=c(subset(indgene,female=="F2" & treatment=="LOW")$fit,
+         subset(indgene,female=="F2" & treatment=="HIGH")$fit),
+    F3=c(subset(indgene,female=="F3" & treatment=="LOW")$fit,
+         subset(indgene,female=="F3" & treatment=="HIGH")$fit),
+    F4=c(subset(indgene,female=="F4" & treatment=="LOW")$fit,
+         subset(indgene,female=="F4" & treatment=="HIGH")$fit),
+    F5=c(subset(indgene,female=="F5" & treatment=="LOW")$fit,
+         subset(indgene,female=="F5" & treatment=="HIGH")$fit),
+    F6=c(subset(indgene,female=="F6" & treatment=="LOW")$fit,
+         subset(indgene,female=="F6" & treatment=="HIGH")$fit),
+    F7=c(subset(indgene,female=="F7" & treatment=="LOW")$fit,
+         subset(indgene,female=="F7" & treatment=="HIGH")$fit),
+    F8=c(subset(indgene,female=="F8" & treatment=="LOW")$fit,
+         subset(indgene,female=="F8" & treatment=="HIGH")$fit),
+    F9=c(subset(indgene,female=="F9" & treatment=="LOW")$fit,
+         subset(indgene,female=="F9" & treatment=="HIGH")$fit),
+    F10=c(subset(indgene,female=="F10" & treatment=="LOW")$fit,
+          subset(indgene,female=="F10" & treatment=="HIGH")$fit)
+  )
+  
+  if(savepdf=="TRUE"|savepdf=="T"){
+   pdf(file=paste0("article3-plots/article3-boxplotraw-geneperfemale-",multiplegenes[i],".pdf"),width=14,height=10,pointsize=30) 
+  }
+
+  boxplot(boxplotdataraw[,-1],xlim=c(0.5,ncol(boxplotdataraw[,-1])+0.5), 
+          boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+          xlab="Female ID",ylab="Raw read count",
+          main=paste0("Gene: ",multiplegenes[i]," (",indgene$genename[1],")")) #Invisible boxes.
+  boxplot(boxplotdataraw[which(boxplotdataraw$treatment=="LOW"),-1],xaxt="n",add=TRUE, 
+          boxfill="lightblue",boxwex=0.25,at=1:ncol(boxplotdataraw[,-1])-0.15,
+          boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+
+  points(x=1:ncol(boxplotdataraw[,-1])-0.15,
+         y=colMeans(boxplotdataraw[which(boxplotdataraw$treatment=="LOW"),-1]),
+         col="blue",pch=18)
+  boxplot(boxplotdataraw[which(boxplotdataraw$treatment=="HIGH"),-1],xaxt="n",add=TRUE, 
+          boxfill="red",boxwex=0.25,at=1:ncol(boxplotdataraw[,-1])+0.15,
+          boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+  box(lwd=5)
+  axis(side=1,at=1:10,labels=c("F1","F2","F3","F4","F5","F6","F7","F8","F9","F10"),
+       lwd=5,lwd.ticks=5)
+  axis(side=2,lwd=5,lwd.ticks=5)
+  points(x=1:ncol(boxplotdataraw[,-1])+0.15,
+         y=colMeans(boxplotdataraw[which(boxplotdataraw$treatment=="HIGH"),-1]),
+         col="blue",pch=18)
+  #legend(ncol(boxplotdataraw[,-1])+1,max(boxplotdataraw[,-1]),fill=c("lightgreen","red"),legend=c("Low","High"),box.lty=0)
+  
+  #Using vioplot.
+  #for(i in 1:10){
+  #  for(j in unique(boxplotdata$treatment)){
+  #    vioplot2(boxplotdata[which(boxplotdata[,1]==j),i+1],
+  #             at=ifelse(j=="LOW", i-0.05, i+0.05),
+  #             side=ifelse(j=="LOW", "left", "right"),
+  #             col=ifelse(j=="LOW", "red", "blue"),
+  #             add = T)
+  #  }
+  #}
+  #title(paste0("Gene: ",multiplegenes[i]), xlab="Female")
+  #legend("topright", fill = c("red", "blue"),
+  #       legend = c("Low", "High"), box.lty=0)
+  if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+  }
+  
+  if(savepdf=="TRUE"|savepdf=="T"){
+   pdf(file=paste0("article3-plots/article3-boxplotfit-geneperfemale-",multiplegenes[i],".pdf"),width=14,height=10,pointsize=30) 
+  }
+  
+  boxplot(boxplotdatafit[,-1],xlim=c(0.5,ncol(boxplotdatafit[,-1])+0.5), 
+          boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+          xlab="Female ID",ylab="Fitted TMM-normalized read count",
+          main=paste0("Gene: ",multiplegenes[i]," (",indgene$genename[1],")")) #Invisible boxes.
+  boxplot(boxplotdatafit[which(boxplotdatafit$treatment=="LOW"),-1],xaxt="n",add=TRUE, 
+          boxfill="lightblue",boxwex=0.25,at=1:ncol(boxplotdatafit[,-1])-0.15,
+          boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+  points(x=1:ncol(boxplotdatafit[,-1])-0.15,
+         y=colMeans(boxplotdatafit[which(boxplotdatafit$treatment=="LOW"),-1]),
+         col="blue",pch=18)
+  boxplot(boxplotdatafit[which(boxplotdatafit$treatment=="HIGH"),-1],xaxt="n",add=TRUE, 
+          boxfill="red",boxwex=0.25,at=1:ncol(boxplotdatafit[,-1])+0.15,
+          boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+  box(lwd=5)
+  axis(side=1,at=1:10,labels=c("F1","F2","F3","F4","F5","F6","F7","F8","F9","F10"),
+       lwd=5,lwd.ticks=5)
+  axis(side=2,lwd=5,lwd.ticks=5)
+  points(x=1:ncol(boxplotdatafit[,-1])+0.15,
+         y=colMeans(boxplotdatafit[which(boxplotdatafit$treatment=="HIGH"),-1]),
+         col="blue",pch=18)
+  for(i in 1:ncol(boxplotdatafit[,-1])){
+    lines(x=c(i-0.15,i+0.15),
+         y=c(mean(boxplotdatafit[which(boxplotdatafit$treatment=="LOW"),i+1]),
+             mean(boxplotdatafit[which(boxplotdatafit$treatment=="HIGH"),i+1])),
+         col="blue",lty="dashed",lwd=4)
+  }
+  #legend(ncol(boxplotdatafit[,-1])+1,max(boxplotdatafit[,-1]),fill=c("lightgreen","red"),legend=c("Low","High"),box.lty=0)
+  
+  if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+  }
+}
+```
+
+##### **Look at the variance of all individual genes.**
+```{r eval=FALSE}
+#Calculate variance for every gene individually and store in a table.
+#?array
+data5stats<-array(data=0,dim=c(nlevels(data5$gene),10)) #Create a table to store gene sum, gene min, gene max, gene mean, means per treatment, gene variance, variance per treatment for each gene.
+data5statsnorm<-array(data=0,dim=c(nlevels(data5$gene),10))
+colnames(data5stats)=c("gene","genesum","genemin","genemax","genemean","meanH","meanL","genevar","varH","varL") #Name columns of stats table.
+colnames(data5statsnorm)=c("gene","genesum","genemin","genemax","genemean","meanH","meanL","genevar","varH","varL")
+data5stats<-as.data.frame(data5stats)
+data5statsnorm<-as.data.frame(data5statsnorm)
+#head(data5stats)
+for (i in 1:nlevels(data5$gene)){
+	indgene<-subset(x=data5,gene==levels(data5$gene)[i])
+	if ((i/1000-round(i/1000))==0){
+	  print(paste0("Calculating stats for gene #",i))
+	  }
+	data5stats[i,1]<-levels(data5$gene)[i]
+	data5statsnorm[i,1]<-levels(data5$gene)[i]
+	data5stats[i,2]<-sum(indgene$count)
+	data5statsnorm[i,2]<-sum(indgene$normcount)
+	data5stats[i,3]<-min(indgene$count)
+	data5statsnorm[i,3]<-min(indgene$normcount)
+	data5stats[i,4]<-max(indgene$count)
+	data5statsnorm[i,4]<-max(indgene$normcount)
+	data5stats[i,5]<-mean(indgene$count)
+	data5statsnorm[i,5]<-mean(indgene$normcount)
+	data5stats[i,6]<-mean(subset(x=indgene,treatment=="HIGH")$count)
+	data5statsnorm[i,6]<-mean(subset(x=indgene,treatment=="HIGH")$normcount)
+	data5stats[i,7]<-mean(subset(x=indgene,treatment=="LOW")$count)
+	data5statsnorm[i,7]<-mean(subset(x=indgene,treatment=="LOW")$normcount)
+	data5stats[i,8]<-var(indgene$count)
+	data5statsnorm[i,8]<-var(indgene$normcount)
+	data5stats[i,9]<-var(subset(x=indgene,treatment=="HIGH")$count)
+	data5statsnorm[i,9]<-var(subset(x=indgene,treatment=="HIGH")$normcount)
+	data5stats[i,10]<-var(subset(x=indgene,treatment=="LOW")$count)
+	data5statsnorm[i,10]<-var(subset(x=indgene,treatment=="LOW")$normcount)
+}
+data5stats$index<-rownames(data5stats)
+data5statsnorm$index<-rownames(data5statsnorm)
+head(data5stats)
+head(data5statsnorm)
+
+write.table(data5stats,file="article3-matrix-data5stats.txt",sep="\t")
+write.table(data5statsnorm,file="article3-matrix-data5statsnorm.txt",sep="\t")
+```
+
+```{r eval=TRUE}
+data5stats<-read.csv("article3-matrix-data5stats.txt",header=TRUE,sep="\t")
+data5statsnorm<-read.csv("article3-matrix-data5statsnorm.txt",header=TRUE,sep="\t")
+```
+
+```{r, fig.height=3, fig.width=5}
+#Plot variances for raw counts.
+#data5stats<-read.csv("article3-matrix-data5stats.txt",header=TRUE,sep="\t")
+#data5statsnorm<-read.csv("article3-matrix-data5statsnorm.txt",header=TRUE,sep="\t")
+tail(data5stats[order(data5stats$genevar),c(1,8,9,10)],10) #Lagest gene variances.
+plot(data5stats$index,data5stats$genevar,col=ifelse(data5stats$genevar>1.0e+10,"green","blue"),pch=c(19,19),xlab="Gene index",ylab="Gene read count variance")
+with(data5stats[data5stats$genevar>1.0e+10,],text(x=index,y=genevar,labels=gene,pos=2))
+plot(data5stats$varL,col=ifelse(data5stats$varL>1.0e+10,"green","blue"),pch=c(19,19),xlab="Gene index",ylab="Read count variance")
+with(data5stats[data5stats$varL>1.0e+10,],text(x=index,y=varL,labels=gene,pos=2))
+plot(data5stats$varH,col=ifelse(data5stats$varH>1.0e+10,"green","blue"),pch=c(19,19),xlab="Gene index",ylab="Read count variance")
+with(data5stats[data5stats$varH>1.0e+10,],text(x=index,y=varH,labels=gene,pos=2))
+```
+
+##### **Test for global differential expression using lme4::glmer.nb.**
+```{r eval=FALSE}
+data5<-read.csv("article3-matrix-data5.txt",header=TRUE,sep="\t")
+```
+
+```{r eval=FALSE}
+#data5<-read.csv("article3-matrix-data5.txt",header=TRUE,sep="\t")
+#Function to save warning and error messages coming from lme4::glmer.nb.
+catchToList<-function(expr){
+  glmmmodel<-NULL
+  myWarnings<-NULL
+  wHandler<-function(w){
+    myWarnings<<-c(myWarnings, w$message)
+    invokeRestart("muffleWarning")
+  }
+  myError<-NULL
+  eHandler<-function(e){
+    myError<<-e$message
+    NULL
+  }
+  glmmmodel<<-tryCatch(withCallingHandlers(expr,warning=wHandler),error=eHandler)
+  warningmessage<<-myWarnings
+  errormessage<<-myError
+} 
+
+#Run model for every gene individually and store p-values in a table. Genes that result in errors or warnings during the lme4::glmer.nb evaluation are excluded.
+#?array
+data5pvalues1<-array(data=0,dim=c(nlevels(data5$gene),11)) #Create a table to store p-values for each gene.
+#p.adjust.methods #Include columns for gene name and adjusted p-values.
+p.adjust.M<-p.adjust.methods[p.adjust.methods!="fdr"] #Remove fdr because it's just an alias of BH.
+colnames(data5pvalues1)=c("gene","pval",p.adjust.M,"warnings","errors") #Name columns of p-value table.
+
+nwarnings<-0
+nerrors<-0
+nsuccess<-0
+for (i in 1:nlevels(data5$gene)){
+  #indgene<-subset(x=data5,gene==levels(data5$gene)[i])
+  if ((i/1000-round(i/1000))==0){
+    print(paste0("Calculating stats for gene ",levels(data5$gene)[i]," (#",i,")"))
+  }
+  
+  catchToList(lme4::glmer.nb(round(normcount)~treatment+(1|male)+(1|female)+(1|seqpool),data=data5[data5$gene==levels(data5$gene)[i],],control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=100000))))
+  if(class(warningmessage)=="character" | class(errormessage)=="character"){
+    data5pvalues1[i,1]<-levels(data5$gene)[i]
+    data5pvalues1[i,2]<-NA
+    if(class(warningmessage)=="character"){
+      nwarnings<-nwarnings+1
+      data5pvalues1[i,10]<-paste0(warningmessage, collapse=" AND ")
+    }
+    if(class(errormessage)=="character"){
+      nerrors<-nerrors+1
+      data5pvalues1[i,11]<-paste0(errormessage, collapse=" AND ")
+    }
+  }else{
+    nsuccess<-nsuccess+1
+    data5pvalues1[i,1]<-levels(data5$gene)[i]
+    data5pvalues1[i,2]<-as.numeric(as.character(Anova(glmmmodel,type="III")$Pr[2])) #Collect p-value.
+  }
+}
+data5pvalues1<-as.data.frame(data5pvalues1)
+#head(data5pvalues1)
+print(paste0("Number of successfully generated p-values = ",nsuccess))
+print(paste0("Number of warning messages = ",nwarnings))
+print(paste0("Number of error messages = ",nerrors))
+write.table(data5pvalues1,file="article3-matrix-data5pvalues1.txt",sep="\t")
+
+#Check an individual gene.
+#selectedgene<-"ENSDARG00000052747"
+#glmmmodel<-lme4::glmer.nb(round(normcount)~treatment+(1|treatment:male)+(1|female)+(1|seqpool),data=data5[data5$gene==selectedgene,],control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=10000000)))
+#summary(glmmmodel)
+#Anova(glmmmodel,type="III")
+```
+
+##### **Multiple-testing correction of p-values.**
+```{r eval=TRUE}
+data5pvalues1<-read.csv("article3-matrix-data5pvalues1.txt",header=TRUE,sep="\t")
+```
+
+```{r eval=FALSE}
+#data5pvalues1<-read.csv("article3-matrix-data5pvalues1.txt",header=TRUE,sep="\t")
+#Multiple-testing correction of p-values.
+data5pvalues2<-data5pvalues1[!is.na(data5pvalues1[,2]),]
+data5pvalues2$pval<-as.numeric(as.character(data5pvalues2$pval))
+head(data5pvalues2)
+nrow(data5pvalues2) #Number of genes for which the stats worked without warnings or errors.
+#head(round(p.adjust(data5pvalues2$pval,"BH"),3)) #Briefly check BH adjustments.
+p.adj<-sapply(p.adjust.M,function(method) p.adjust(data5pvalues2$pval,method)) #Apply all correction methods to raw p-values.
+head(p.adj)
+p.adj.n<-sapply(p.adjust.M,function(method) p.adjust(data5pvalues2$pval,method,n=nrow(data5pvalues2))) #Include number of hypotheses being tested as a control for the function.
+#head(p.adj.n)
+stopifnot(identical(p.adj[,"none"],data5pvalues2$pval),p.adj<=p.adj.n) #Check if the none and the test numbers match the original p-values.
+p.adj<-noquote(apply(p.adj,2,format.pval,digits=3)) 
+#head(p.adj)
+for (i in 1:7){
+  data5pvalues2[,i+2]<-p.adj[,i]
+}
+head(data5pvalues2)
+
+#Add column with gene names to pvalue table.
+data5pvalues2$genename<-0
+for(i in 1:nrow(data5pvalues2)){
+  gname<-droplevels(subset(genenames,Gene.stable.ID==as.character(data5pvalues2[i,1])))
+  if(nrow(gname)==0){
+    print(paste0("Gene #",i," (",data5pvalues2[i,1],") was not found."))
+    data5pvalues2[i,12]<-as.character(data5pvalues2[i,1])
+  }else{
+    if(nlevels(gname$Gene.name)==1){
+      if(as.character(gname[1,2])==""){
+        data5pvalues2[i,12]<-as.character(data5pvalues2[i,1])
+      }else{
+        data5pvalues2[i,12]<-as.character(gname[1,2])
+      }
+    }else{
+      print(paste0("Gene #",i," (",data5pvalues2[i,1],") has ",nlevels(gname$Gene.name)," matches."))
+      data5pvalues2[i,12]<-"MULTIPLE"
+    }
+  }
+}
+data5pvalues2$genename<-as.factor(data5pvalues2$genename)
+```
+
+```{r eval=TRUE}
+data5pvalues2<-read.csv("article3-matrix-data5pvalues2.txt",header=TRUE,sep="\t")
+```
+
+```{r}
+head(data5pvalues2)
+```
+
+```{r eval=FALSE}
+write.table(data5pvalues2,file="article3-matrix-data5pvalues2.txt",sep="\t")
+write.table(data5pvalues2[data5pvalues2$pval<0.05,],file="article3-matrix-data5pvalues2-pvalbelow005.txt",sep="\t")
+write.table(data5pvalues2[data5pvalues2$BH<0.05,],file="article3-matrix-data5pvalues2-BHbelow005.txt",sep="\t")
+write.table(data5pvalues2[order(data5pvalues2$BH),1],file="article3-data5pvalues2-orderedlistofgenesbyBH.txt",sep="\t",col.names=F,row.names=F,quote=FALSE)
+```
+
+```{r, fig.height=5, fig.width=5}
+#data5pvalues2<-read.csv("article3-matrix-data5pvalues2.txt",header=TRUE,sep="\t")
+#Plot p-value corrections.
+require(graphics)
+#?matplot
+matplot(data5pvalues2[,2],data5pvalues2[,3:9],xlab="P-value (no adjustment)",ylab="Adjusted p-value",type="p",asp=1,lty=1:6,pch=18,xlim=c(0,1.0),ylim=c(0,1.0))
+legend(0.7,0.6,p.adjust.M,col=1:6,pch=18)
+abline(v=0.05,h=0.05,col=c("blue","red"),lty=2,lwd=3)
+```
+
+```{r}
+#data5pvalues2<-read.csv("article3-matrix-data5pvalues2.txt",header=TRUE,sep="\t")
+#Check number of genes differentially expressed.
+nrow(subset(x=data5pvalues2,pval<=0.05)) #Number of p-values below 0.05 without correction.
+#nrow(subset(x=data5pvalues2,pval<0.01)) #Number of p-values below 0.01 without correction.
+nrow(subset(x=data5pvalues2,BH<=0.05)) #Number of p-values below 0.05 with BH correction.
+#nrow(subset(x=data5pvalues2,BH<0.01)) #Number of p-values below 0.01 with BH correction.
+data5degenes<-subset(x=data5pvalues2,BH<=0.05) #List of genes with p<0.05 after BH correction.
+data5degenes
+#write.table(data5degenes,file="article3-matrix-data5degenes.txt",sep="\t")
+```
+
+```{r, fig.height=3, fig.width=5}
+#Plot p-values.
+plot(data5pvalues2$pval,xlab="Gene index",ylab="Uncorrected p-value",pch=18,col=ifelse(data5pvalues2$pval<=0.05,"green","blue"))
+abline(h=0.05,col="blue")
+abline(h=0.01,col="red")
+plot(data5pvalues2$BH,xlab="Gene index",ylab="Corrected p-value",pch=18,col=ifelse(data5pvalues2$BH<=0.05,"green","blue"))
+abline(h=0.05,col="blue")
+abline(h=0.01,col="red")
+```
+
+### **SPERM ANALYSIS**
+```{r, fig.height=4, fig.width=4}
+spermdata<-read.csv("/Volumes/GoogleDrive/My Drive/myscripts/article3-malecompetitionzebrafishtransgenerationaleffects/article3-data/article3-spermoffspringdata/spermdata.csv",sep=",",header=TRUE)
+savepdf<-"FALSE"
+summary(spermdata)
+head(spermdata)
+spermdatanonzero<-droplevels(spermdata[-which(spermdata$spa==10 & spermdata$spermtype=="Static"),]) #Remove static sperms at spa=10.
+summary(spermdatanonzero)
+head(spermdatanonzero)
+spermpca<-prcomp(spermdata[,c(4:6)],center=TRUE,scale=TRUE)
+plot(spermpca,type="l")
+summary(spermpca)
+
+library(devtools)
+#install_github("ggbiplot","vqv")
+
+#library(ggbiplot)
+#g<-ggbiplot(spermpca,obs.scale=1,var.scale=1, 
+#              groups=spermdata[,2],ellipse=TRUE, 
+#              circle=TRUE)
+#g<-g+scale_color_discrete(name='')
+#g<-g+theme(legend.direction='horizontal', 
+#               legend.position='top')
+#print(g)
+
+#biplot(spermpca)
+
+require(ggplot2)
+
+theta<-seq(0,2*pi,length.out=100)
+circle<-data.frame(x=cos(theta),y=sin(theta))
+p<-ggplot(circle,aes(x,y))+geom_path()
+
+loadings<-data.frame(spermpca$rotation, 
+                       .names=row.names(spermpca$rotation))
+p+geom_text(data=loadings,
+              mapping=aes(x = PC1, y = PC2, label = .names, colour = .names)) +
+  coord_fixed(ratio=1) +
+  labs(x = "PC1", y = "PC2")
+
+#install.packages("ggfortify")
+library("ggfortify")
+pc1var<-round((spermpca$sdev[1]^2)/sum(spermpca$sdev^2)*100,digits=2)
+pc2var<-round((spermpca$sdev[2]^2)/sum(spermpca$sdev^2)*100,digits=2)
+autoplot(spermpca,data=spermdata,colour="treatment",loadings=TRUE,
+         loadings.colour="black",loadings.label=TRUE,loadings.label.size=5,
+         loadings.label.colour="black",
+         frame=TRUE,frame.type="norm",frame.colour="treatment")+
+  labs(fill="Treatment")+xlab(paste("PC1 (",pc1var,"%)"))+ylab(paste("PC2 (",pc2var,"%)"))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.9),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermdatapca-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+```
+
+```{r}
+summary(spermpca)
+spermpca$rotation
+
+absspermpcarotation<-abs(spermpca$rotation)
+sweep(absspermpcarotation,2,colSums(absspermpcarotation),"/")
+```
+
+
+```{r, fig.height=3, fig.width=5}
+savepdf<-"FALSE"
+
+for(i in 1:nlevels(spermdata$male)){
+  indmale<-droplevels(subset(x=spermdata,male==levels(spermdata$male)[i]))
+  treat<-indmale$treatment[1]
+  #glmmmodel<-glmer.nb(round(normcount)~treatment+(1|male)+(1|female)+(1|seqpool),data=indgene,control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=10000000))) #Control: change the optimizer and max number of iterations to avoid warning message.
+  #The term (1|var1/var2/var3) expands to (1|var1)+(1|var1:var2)+(1|var1:var2:var3), where : denotes an interaction.
+  #indgene$fit<-fitted(glmmmodel)
+  
+  if(savepdf=="TRUE"|savepdf=="T"){
+    pdf(file=paste0("article3-plots/article3-boxplotspermvsl-permale-",levels(spermdata$male)[i],".pdf"),width=14,height=10,pointsize=30)
+  }
+  
+  boxplotdataraw<-list(
+    Sec10=c(subset(indmale,spa==10)$vsl),
+    Sec20=c(subset(indmale,spa==20)$vsl),
+    Sec30=c(subset(indmale,spa==30)$vsl),
+    Sec40=c(subset(indmale,spa==40)$vsl),
+    Sec50=c(subset(indmale,spa==50)$vsl),
+    Sec60=c(subset(indmale,spa==60)$vsl)
+  )
+  
+  boxplot(boxplotdataraw,xlim=c(0.2,6+0.7),ylim=c(0,max(spermdata$vsl)),
+          xlab="Time (seconds post activation)",ylab=expression(paste("VSL (",mu,"m/s)")),main=paste0("Male: ",levels(spermdata$male)[i]),
+          boxfill=ifelse(treat=="LOW","lightblue","red"),boxwex=0.25,at=1:6-0.1,xaxt="n",
+          boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+  
+  stripchart(boxplotdataraw,vertical=TRUE,add=TRUE,method="jitter",
+             col=rgb(1,0,1,alpha=0.3),pch=20,at=1:6+0.1)#method="jitter","overplot","stack".
+  
+  means<-unlist(lapply(boxplotdataraw,mean),use.names=FALSE)
+  points(x=seq(1,6,1)-0.1,
+         y=means,
+         col=rgb(0,0,1,alpha=1.0),pch=18)
+  lines(x=seq(1,6,1)-0.1,y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+  box(lwd=5)
+  axis(side=1,at=1:6,labels=c("10","20","30","40","50","60"),
+       lwd=5,lwd.ticks=5)
+  axis(side=2,lwd=5,lwd.ticks=5)
+  #legend(ncol(boxplotdataraw[,-1])+1,max(boxplotdataraw[,-1]),fill=c("lightgreen","red"),legend=c("Low","High"),box.lty=0)
+
+  if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+  }
+}
+```
+
+```{r, fig.height=3, fig.width=5}
+for(i in 1:nlevels(spermdata$male)){
+  indmale<-droplevels(subset(x=spermdata,male==levels(spermdata$male)[i]))
+  treat<-indmale$treatment[1]
+  #glmmmodel<-glmer.nb(round(normcount)~treatment+(1|male)+(1|female)+(1|seqpool),data=indgene,control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=10000000))) #Control: change the optimizer and max number of iterations to avoid warning message.
+  #The term (1|var1/var2/var3) expands to (1|var1)+(1|var1:var2)+(1|var1:var2:var3), where : denotes an interaction.
+  #indgene$fit<-fitted(glmmmodel)
+  
+  if(savepdf=="TRUE"|savepdf=="T"){
+    pdf(file=paste0("article3-plots/article3-boxplotspermvcl-permale-",levels(spermdata$male)[i],".pdf"),width=14,height=10,pointsize=30)
+  }
+  
+  boxplotdataraw<-list(
+    Sec10=c(subset(indmale,spa==10)$vcl),
+    Sec20=c(subset(indmale,spa==20)$vcl),
+    Sec30=c(subset(indmale,spa==30)$vcl),
+    Sec40=c(subset(indmale,spa==40)$vcl),
+    Sec50=c(subset(indmale,spa==50)$vcl),
+    Sec60=c(subset(indmale,spa==60)$vcl)
+  )
+  
+  boxplot(boxplotdataraw,xlim=c(0.2,6+0.7),ylim=c(0,max(spermdata$vcl)),
+          xlab="Time (seconds post activation)",ylab=expression(paste("VCL (",mu,"m/s)")),main=paste0("Male: ",levels(spermdata$male)[i]),
+          boxfill=ifelse(treat=="LOW","lightblue","red"),boxwex=0.25,at=1:6-0.1,xaxt="n",
+          boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+  
+  stripchart(boxplotdataraw,vertical=TRUE,add=TRUE,method="jitter",
+             col=rgb(1,0,1,alpha=0.3),pch=20,at=1:6+0.1)#method="jitter","overplot","stack".
+  
+  means<-unlist(lapply(boxplotdataraw,mean),use.names=FALSE)
+  points(x=seq(1,6,1)-0.1,
+         y=means,
+         col=rgb(0,0,1,alpha=1.0),pch=18)
+  lines(x=seq(1,6,1)-0.1,y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+  box(lwd=5)
+  axis(side=1,at=1:6,labels=c("10","20","30","40","50","60"),
+       lwd=5,lwd.ticks=5)
+  axis(side=2,lwd=5,lwd.ticks=5)
+  #legend(ncol(boxplotdataraw[,-1])+1,max(boxplotdataraw[,-1]),fill=c("lightgreen","red"),legend=c("Low","High"),box.lty=0)
+
+  if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+  }
+}
+```
+
+```{r, fig.height=3, fig.width=5}
+savepdf<-"FALSE"
+for(i in 1:nlevels(spermdata$male)){
+  indmale<-droplevels(subset(x=spermdata,male==levels(spermdata$male)[i]))
+  treat<-indmale$treatment[1]
+  #glmmmodel<-glmer.nb(round(normcount)~treatment+(1|male)+(1|female)+(1|seqpool),data=indgene,control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=10000000))) #Control: change the optimizer and max number of iterations to avoid warning message.
+  #The term (1|var1/var2/var3) expands to (1|var1)+(1|var1:var2)+(1|var1:var2:var3), where : denotes an interaction.
+  #indgene$fit<-fitted(glmmmodel)
+  
+  if(savepdf=="TRUE"|savepdf=="T"){
+    pdf(file=paste0("article3-plots/article3-boxplotspermvap-permale-",levels(spermdata$male)[i],".pdf"),width=14,height=10,pointsize=30)
+  }
+  
+  boxplotdataraw<-list(
+    Sec10=c(subset(indmale,spa==10)$vap),
+    Sec20=c(subset(indmale,spa==20)$vap),
+    Sec30=c(subset(indmale,spa==30)$vap),
+    Sec40=c(subset(indmale,spa==40)$vap),
+    Sec50=c(subset(indmale,spa==50)$vap),
+    Sec60=c(subset(indmale,spa==60)$vap)
+  )
+  
+  boxplot(boxplotdataraw,xlim=c(0.2,6+0.7),ylim=c(0,max(spermdata$vap)),
+          xlab="Time (seconds post activation)",ylab=expression(paste("VAP (",mu,"m/s)")),main=paste0("Male: ",levels(spermdata$male)[i]),
+          boxfill=ifelse(treat=="LOW","lightblue","red"),boxwex=0.25,at=1:6-0.1,xaxt="n",
+          boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+  
+  stripchart(boxplotdataraw,vertical=TRUE,add=TRUE,method="jitter",
+             col=rgb(1,0,1,alpha=0.3),pch=20,at=1:6+0.1)#method="jitter","overplot","stack".
+  
+  means<-unlist(lapply(boxplotdataraw,mean),use.names=FALSE)
+  points(x=seq(1,6,1)-0.1,
+         y=means,
+         col=rgb(0,0,1,alpha=1.0),pch=18)
+  lines(x=seq(1,6,1)-0.1,y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+  box(lwd=5)
+  axis(side=1,at=1:6,labels=c("10","20","30","40","50","60"),
+       lwd=5,lwd.ticks=5)
+  axis(side=2,lwd=5,lwd.ticks=5)
+  #legend(ncol(boxplotdataraw[,-1])+1,max(boxplotdataraw[,-1]),fill=c("lightgreen","red"),legend=c("Low","High"),box.lty=0)
+
+  if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+  }
+}
+```
+
+```{r, fig.height=3, fig.width=5}
+savepdf<-"FALSE"
+
+#VCL.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-boxplotspermvcl-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+boxplotdataraw<-spermdata$vcl
+boxplotdatarawL<-list(
+  time10=subset(spermdata,spa==10 & treatment=="LOW")$vcl,
+  time20=subset(spermdata,spa==20 & treatment=="LOW")$vcl,
+  time30=subset(spermdata,spa==30 & treatment=="LOW")$vcl,
+  time40=subset(spermdata,spa==40 & treatment=="LOW")$vcl,
+  time50=subset(spermdata,spa==50 & treatment=="LOW")$vcl,
+  time60=subset(spermdata,spa==60 & treatment=="LOW")$vcl
+)
+  
+boxplotdatarawH<-list(
+  time10=subset(spermdata,spa==10 & treatment=="HIGH")$vcl,
+  time20=subset(spermdata,spa==20 & treatment=="HIGH")$vcl,
+  time30=subset(spermdata,spa==30 & treatment=="HIGH")$vcl,
+  time40=subset(spermdata,spa==40 & treatment=="HIGH")$vcl,
+  time50=subset(spermdata,spa==50 & treatment=="HIGH")$vcl,
+  time60=subset(spermdata,spa==60 & treatment=="HIGH")$vcl
+)
+  
+boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+        xlab="Time (seconds post activation)",ylab=expression(paste("VCL (",mu,"m/s)"))) #Invisible boxes.
+
+boxplot(boxplotdatarawL,xaxt="n",add=TRUE, 
+        boxfill="lightblue",boxwex=0.25,at=c(1:6)-0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+points(x=c(1:6)-0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)-0.15,y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+
+boxplot(boxplotdatarawH,xaxt="n",add=TRUE, 
+        boxfill="red",boxwex=0.25,at=c(1:6)+0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+box(lwd=5)
+axis(side=1,at=c(1:6),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+points(x=c(1:6)+0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)+0.15,y=means,col=rgb(1,0,0,alpha=1.0),lty="dashed",lwd=2)
+
+#boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+#        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+#        xlab="Time (seconds post activation)",ylab=expression(paste("VCL (",mu,"m/s)"))) #Invisible boxes.
+#means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="lightblue",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(0,0,1,alpha=1.0),lty="solid",lwd=2)
+#means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="red",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(1,0,0,alpha=1.0),lty="solid",lwd=2)
+  
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+
+#VSL.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-boxplotspermvsl-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+boxplotdataraw<-spermdata$vcl
+boxplotdatarawL<-list(
+  time10=subset(spermdata,spa==10 & treatment=="LOW")$vsl,
+  time20=subset(spermdata,spa==20 & treatment=="LOW")$vsl,
+  time30=subset(spermdata,spa==30 & treatment=="LOW")$vsl,
+  time40=subset(spermdata,spa==40 & treatment=="LOW")$vsl,
+  time50=subset(spermdata,spa==50 & treatment=="LOW")$vsl,
+  time60=subset(spermdata,spa==60 & treatment=="LOW")$vsl
+)
+  
+boxplotdatarawH<-list(
+  time10=subset(spermdata,spa==10 & treatment=="HIGH")$vsl,
+  time20=subset(spermdata,spa==20 & treatment=="HIGH")$vsl,
+  time30=subset(spermdata,spa==30 & treatment=="HIGH")$vsl,
+  time40=subset(spermdata,spa==40 & treatment=="HIGH")$vsl,
+  time50=subset(spermdata,spa==50 & treatment=="HIGH")$vsl,
+  time60=subset(spermdata,spa==60 & treatment=="HIGH")$vsl
+)
+  
+boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+        xlab="Time (seconds post activation)",ylab=expression(paste("VSL (",mu,"m/s)"))) #Invisible boxes.
+
+boxplot(boxplotdatarawL,xaxt="n",add=TRUE, 
+        boxfill="lightblue",boxwex=0.25,at=c(1:6)-0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+points(x=c(1:6)-0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)-0.15,y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+
+boxplot(boxplotdatarawH,xaxt="n",add=TRUE, 
+        boxfill="red",boxwex=0.25,at=c(1:6)+0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+box(lwd=5)
+axis(side=1,at=c(1:6),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+points(x=c(1:6)+0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)+0.15,y=means,col=rgb(1,0,0,alpha=1.0),lty="dashed",lwd=2)
+
+#boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+#        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+#        xlab="Time (seconds post activation)",ylab=expression(paste("VSL (",mu,"m/s)"))) #Invisible boxes.
+#means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="lightblue",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(0,0,1,alpha=1.0),lty="solid",lwd=2)
+#means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="red",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(1,0,0,alpha=1.0),lty="solid",lwd=2)
+  
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+
+#VAP.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-boxplotspermvap-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+boxplotdataraw<-spermdata$vcl
+boxplotdatarawL<-list(
+  time10=subset(spermdata,spa==10 & treatment=="LOW")$vap,
+  time20=subset(spermdata,spa==20 & treatment=="LOW")$vap,
+  time30=subset(spermdata,spa==30 & treatment=="LOW")$vap,
+  time40=subset(spermdata,spa==40 & treatment=="LOW")$vap,
+  time50=subset(spermdata,spa==50 & treatment=="LOW")$vap,
+  time60=subset(spermdata,spa==60 & treatment=="LOW")$vap
+)
+  
+boxplotdatarawH<-list(
+  time10=subset(spermdata,spa==10 & treatment=="HIGH")$vap,
+  time20=subset(spermdata,spa==20 & treatment=="HIGH")$vap,
+  time30=subset(spermdata,spa==30 & treatment=="HIGH")$vap,
+  time40=subset(spermdata,spa==40 & treatment=="HIGH")$vap,
+  time50=subset(spermdata,spa==50 & treatment=="HIGH")$vap,
+  time60=subset(spermdata,spa==60 & treatment=="HIGH")$vap
+)
+  
+boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+        xlab="Time (seconds post activation)",ylab=expression(paste("VAP (",mu,"m/s)"))) #Invisible boxes.
+
+boxplot(boxplotdatarawL,xaxt="n",add=TRUE, 
+        boxfill="lightblue",boxwex=0.25,at=c(1:6)-0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+points(x=c(1:6)-0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)-0.15,y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+
+boxplot(boxplotdatarawH,xaxt="n",add=TRUE, 
+        boxfill="red",boxwex=0.25,at=c(1:6)+0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+box(lwd=5)
+axis(side=1,at=c(1:6),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+points(x=c(1:6)+0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)+0.15,y=means,col=rgb(1,0,0,alpha=1.0),lty="dashed",lwd=2)
+
+#boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+#        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+#        xlab="Time (seconds post activation)",ylab=expression(paste("VAP (",mu,"m/s)"))) #Invisible boxes.
+#means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="lightblue",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(0,0,1,alpha=1.0),lty="solid",lwd=2)
+#means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="red",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(1,0,0,alpha=1.0),lty="solid",lwd=2)
+  
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+```
+
+```{r, fig.height=3, fig.width=5}
+#After removal of static sperm at spa=10.
+savepdf<-"FALSE"
+
+#VCL.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-boxplotspermvcl-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+boxplotdataraw<-spermdatanonzero$vcl
+boxplotdatarawL<-list(
+  time10=subset(spermdatanonzero,spa==10 & treatment=="LOW")$vcl,
+  time20=subset(spermdatanonzero,spa==20 & treatment=="LOW")$vcl,
+  time30=subset(spermdatanonzero,spa==30 & treatment=="LOW")$vcl,
+  time40=subset(spermdatanonzero,spa==40 & treatment=="LOW")$vcl,
+  time50=subset(spermdatanonzero,spa==50 & treatment=="LOW")$vcl,
+  time60=subset(spermdatanonzero,spa==60 & treatment=="LOW")$vcl
+)
+  
+boxplotdatarawH<-list(
+  time10=subset(spermdatanonzero,spa==10 & treatment=="HIGH")$vcl,
+  time20=subset(spermdatanonzero,spa==20 & treatment=="HIGH")$vcl,
+  time30=subset(spermdatanonzero,spa==30 & treatment=="HIGH")$vcl,
+  time40=subset(spermdatanonzero,spa==40 & treatment=="HIGH")$vcl,
+  time50=subset(spermdatanonzero,spa==50 & treatment=="HIGH")$vcl,
+  time60=subset(spermdatanonzero,spa==60 & treatment=="HIGH")$vcl
+)
+  
+boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+        xlab="Time (seconds post activation)",ylab=expression(paste("VCL (",mu,"m/s)"))) #Invisible boxes.
+
+boxplot(boxplotdatarawL,xaxt="n",add=TRUE, 
+        boxfill="lightblue",boxwex=0.25,at=c(1:6)-0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+points(x=c(1:6)-0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)-0.15,y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+
+boxplot(boxplotdatarawH,xaxt="n",add=TRUE, 
+        boxfill="red",boxwex=0.25,at=c(1:6)+0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+box(lwd=5)
+axis(side=1,at=c(1:6),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+points(x=c(1:6)+0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)+0.15,y=means,col=rgb(1,0,0,alpha=1.0),lty="dashed",lwd=2)
+
+#boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+#        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+#        xlab="Time (seconds post activation)",ylab=expression(paste("VCL (",mu,"m/s)"))) #Invisible boxes.
+#means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="lightblue",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(0,0,1,alpha=1.0),lty="solid",lwd=2)
+#means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="red",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(1,0,0,alpha=1.0),lty="solid",lwd=2)
+  
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+
+#VSL.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-boxplotspermvsl-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+boxplotdataraw<-spermdatanonzero$vcl
+boxplotdatarawL<-list(
+  time10=subset(spermdatanonzero,spa==10 & treatment=="LOW")$vsl,
+  time20=subset(spermdatanonzero,spa==20 & treatment=="LOW")$vsl,
+  time30=subset(spermdatanonzero,spa==30 & treatment=="LOW")$vsl,
+  time40=subset(spermdatanonzero,spa==40 & treatment=="LOW")$vsl,
+  time50=subset(spermdatanonzero,spa==50 & treatment=="LOW")$vsl,
+  time60=subset(spermdatanonzero,spa==60 & treatment=="LOW")$vsl
+)
+  
+boxplotdatarawH<-list(
+  time10=subset(spermdatanonzero,spa==10 & treatment=="HIGH")$vsl,
+  time20=subset(spermdatanonzero,spa==20 & treatment=="HIGH")$vsl,
+  time30=subset(spermdatanonzero,spa==30 & treatment=="HIGH")$vsl,
+  time40=subset(spermdatanonzero,spa==40 & treatment=="HIGH")$vsl,
+  time50=subset(spermdatanonzero,spa==50 & treatment=="HIGH")$vsl,
+  time60=subset(spermdatanonzero,spa==60 & treatment=="HIGH")$vsl
+)
+  
+boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+        xlab="Time (seconds post activation)",ylab=expression(paste("VSL (",mu,"m/s)"))) #Invisible boxes.
+
+boxplot(boxplotdatarawL,xaxt="n",add=TRUE, 
+        boxfill="lightblue",boxwex=0.25,at=c(1:6)-0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+points(x=c(1:6)-0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)-0.15,y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+
+boxplot(boxplotdatarawH,xaxt="n",add=TRUE, 
+        boxfill="red",boxwex=0.25,at=c(1:6)+0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+box(lwd=5)
+axis(side=1,at=c(1:6),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+points(x=c(1:6)+0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)+0.15,y=means,col=rgb(1,0,0,alpha=1.0),lty="dashed",lwd=2)
+
+#boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+#        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+#        xlab="Time (seconds post activation)",ylab=expression(paste("VSL (",mu,"m/s)"))) #Invisible boxes.
+#means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="lightblue",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(0,0,1,alpha=1.0),lty="solid",lwd=2)
+#means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="red",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(1,0,0,alpha=1.0),lty="solid",lwd=2)
+  
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+
+#VAP.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-boxplotspermvap-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+boxplotdataraw<-spermdatanonzero$vcl
+boxplotdatarawL<-list(
+  time10=subset(spermdatanonzero,spa==10 & treatment=="LOW")$vap,
+  time20=subset(spermdatanonzero,spa==20 & treatment=="LOW")$vap,
+  time30=subset(spermdatanonzero,spa==30 & treatment=="LOW")$vap,
+  time40=subset(spermdatanonzero,spa==40 & treatment=="LOW")$vap,
+  time50=subset(spermdatanonzero,spa==50 & treatment=="LOW")$vap,
+  time60=subset(spermdatanonzero,spa==60 & treatment=="LOW")$vap
+)
+  
+boxplotdatarawH<-list(
+  time10=subset(spermdatanonzero,spa==10 & treatment=="HIGH")$vap,
+  time20=subset(spermdatanonzero,spa==20 & treatment=="HIGH")$vap,
+  time30=subset(spermdatanonzero,spa==30 & treatment=="HIGH")$vap,
+  time40=subset(spermdatanonzero,spa==40 & treatment=="HIGH")$vap,
+  time50=subset(spermdatanonzero,spa==50 & treatment=="HIGH")$vap,
+  time60=subset(spermdatanonzero,spa==60 & treatment=="HIGH")$vap
+)
+  
+boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+        xlab="Time (seconds post activation)",ylab=expression(paste("VAP (",mu,"m/s)"))) #Invisible boxes.
+
+boxplot(boxplotdatarawL,xaxt="n",add=TRUE, 
+        boxfill="lightblue",boxwex=0.25,at=c(1:6)-0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+points(x=c(1:6)-0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)-0.15,y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+
+boxplot(boxplotdatarawH,xaxt="n",add=TRUE, 
+        boxfill="red",boxwex=0.25,at=c(1:6)+0.15,
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these right by +0.15.
+box(lwd=5)
+axis(side=1,at=c(1:6),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+points(x=c(1:6)+0.15,
+       y=means,
+       col="blue",pch=18)
+lines(x=seq(1,6,1)+0.15,y=means,col=rgb(1,0,0,alpha=1.0),lty="dashed",lwd=2)
+
+#boxplot(boxplotdataraw,xlim=c(0.5,6+0.5), 
+#        boxfill=rgb(1,1,1,alpha=1),border=rgb(1,1,1,alpha=1),
+#        xlab="Time (seconds post activation)",ylab=expression(paste("VAP (",mu,"m/s)"))) #Invisible boxes.
+#means<-unlist(lapply(boxplotdatarawL,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="lightblue",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(0,0,1,alpha=1.0),lty="solid",lwd=2)
+#means<-unlist(lapply(boxplotdatarawH,mean),use.names=FALSE)
+#points(x=c(1:6),
+#       y=means,
+#       col="red",pch=18)
+#lines(x=seq(1,6,1),y=means,col=rgb(1,0,0,alpha=1.0),lty="solid",lwd=2)
+  
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+```
+
+
+```{r, fig.height=3, fig.width=5}
+#Fertilization success.
+savepdf<-"FALSE"
+
+offspringdata<-read.csv("/Volumes/GoogleDrive/My Drive/myscripts/article3-malecompetitionzebrafishtransgenerationaleffects/article3-data/article3-spermoffspringdata/offspringdata.csv",sep=",",header=TRUE)
+head(offspringdata)
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-boxplotsferteggs-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+boxplotoffspring<-list(
+  LOW=subset(offspringdata,treatment=="LOW")$ratioferttotal,
+  HIGH=subset(offspringdata,treatment=="HIGH")$ratioferttotal
+)
+
+boxplot(boxplotoffspring$LOW,xlim=c(0.5,2+0.5),ylim=c(0,1),
+        xlab="Treatment",ylab="Fertilization success",
+        boxfill="lightblue",boxwex=0.25,at=c(1),
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+boxplot(boxplotoffspring$HIGH,
+        xlab=NA,ylab=NA,
+        add=TRUE,xaxt="n",boxfill="red",boxwex=0.25,at=c(2),
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+means<-unlist(lapply(boxplotoffspring,mean),use.names=FALSE)
+points(x=c(1:2),
+       y=means,
+       col="blue",pch=18)
+lines(x=c(1:2),y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+box(lwd=5)
+axis(side=1,at=c(1:2),labels=c("LOW","HIGH"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+
+points(x=rep(1-0.1,10),
+       y=boxplotoffspring$LOW,col=rgb(1,0,1,alpha=0.4),pch=20)
+points(x=rep(2+0.1,10),
+       y=boxplotoffspring$HIGH,col=rgb(1,0,1,alpha=0.4),pch=20)
+
+for(i in 1:10){
+  lines(x=c(1-0.1,2+0.1),y=c(boxplotoffspring$LOW[i],boxplotoffspring$HIGH[i]),col=rgb(1,0,1,alpha=0.4),lty="dashed",lwd=2)
+}
+
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-boxplotsfeggsueggs-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+lowdata<-subset(offspringdata,treatment=="LOW")
+highdata<-subset(offspringdata,treatment=="HIGH")
+boxplotoffspring<-list(
+  LOW=lowdata$feggs2hpf/(lowdata$feggs2hpf+lowdata$ueggs2hpf),
+  HIGH=highdata$feggs2hpf/(highdata$feggs2hpf+highdata$ueggs2hpf)
+)
+
+boxplot(boxplotoffspring$LOW,xlim=c(0.5,2+0.5),ylim=c(0,1),
+        xlab="Treatment",ylab="Fertilization success",
+        boxfill="lightblue",boxwex=0.25,at=c(1),
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+boxplot(boxplotoffspring$HIGH,
+        xlab=NA,ylab=NA,
+        add=TRUE,xaxt="n",boxfill="red",boxwex=0.25,at=c(2),
+        boxlwd=4,whisklwd=4,whisklty=1,staplelty=1,staplelwd=4) #Shift these left by -0.15.
+means<-unlist(lapply(boxplotoffspring,mean),use.names=FALSE)
+points(x=c(1:2),
+       y=means,
+       col="blue",pch=18)
+lines(x=c(1:2),y=means,col=rgb(0,0,1,alpha=1.0),lty="dashed",lwd=2)
+box(lwd=5)
+axis(side=1,at=c(1:2),labels=c("LOW","HIGH"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+
+points(x=rep(1-0.1,10),
+       y=boxplotoffspring$LOW,col=rgb(1,0,1,alpha=0.4),pch=20)
+points(x=rep(2+0.1,10),
+       y=boxplotoffspring$HIGH,col=rgb(1,0,1,alpha=0.4),pch=20)
+
+for(i in 1:10){
+  lines(x=c(1-0.1,2+0.1),y=c(boxplotoffspring$LOW[i],boxplotoffspring$HIGH[i]),col=rgb(1,0,1,alpha=0.4),lty="dashed",lwd=2)
+}
+
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+```
+
+```{r}
+#Analyse differences in fertilization success.
+#Generalized mixed model.
+fertisuccglmm1<-glmer(cbind(feggs2hpf,ueggs2hpf+beggs2hpf)~treatment+(1|male)+(1|female)+(1|male:female),data=offspringdata,family=binomial)
+fertisuccglmm2<-glmer(cbind(feggs2hpf,ueggs2hpf+beggs2hpf)~treatment+(1|male)+(1|female),data=offspringdata,family=binomial)
+fertisuccglmm3<-glmer(cbind(feggs2hpf,ueggs2hpf)~treatment+(1|male)+(1|female)+(1|male:female),data=offspringdata,family=binomial)
+fertisuccglmm4<-glmer(cbind(feggs2hpf,ueggs2hpf)~treatment+(1|male)+(1|female),data=offspringdata,family=binomial)
+AIC(fertisuccglmm1,fertisuccglmm2,fertisuccglmm3,fertisuccglmm4)
+fertisuccglmm1
+summary(fertisuccglmm1)
+fertisuccglmm2
+summary(fertisuccglmm2)
+fertisuccglmm3
+summary(fertisuccglmm3)
+fertisuccglmm4
+summary(fertisuccglmm4)
+```
+
+```{r, fig.height=3, fig.width=5}
+savepdf<-"FALSE"
+
+#Test statistics for sperm speed and fertilization success.
+fitdistrplus::descdist(offspringdata$ratioferttotal,discrete=FALSE,boot=NULL)
+fitdistrplus::descdist(spermdata$vsl,discrete=FALSE,boot=NULL)
+fitdistrplus::descdist(spermdata$vcl,discrete=FALSE,boot=NULL)
+fitdistrplus::descdist(spermdata$vap,discrete=FALSE,boot=NULL)
+
+hist(offspringdata$ratioferttotal)
+hist(spermdata$vsl)
+hist(spermdata$vcl)
+hist(spermdata$vap)
+
+#VSL.
+ggplot(spermdata,aes(spa,vsl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VSL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                   size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                   size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                         size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                   labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvsl-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+#VCL.
+ggplot(spermdata,aes(spa,vcl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VCL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                   size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                   size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                         size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                   labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvcl-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+#VAP.
+ggplot(spermdata,aes(spa,vap,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VAP (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                   size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                   size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                         size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                   labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvap-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+```
+
+```{r, fig.height=3, fig.width=5}
+savepdf<-"FALSE"
+
+library(lme4)
+require(ggplot2)
+
+#VSL.
+#"Base" model of sperm speed allowing for individual variability in speed (in technical terms, a random intercept for each male: (1 | male)).
+m.basevsl<-lmer(vsl~spa+(1|male),data=spermdata,REML=F)
+
+#Add fixed effects of treatment on the intercept (i.e., a constant difference in speed among males randomly assigned to different treatment):
+m.0vsl<-lmer(vsl~spa+treatment+(1|male),data=spermdata,REML=F)
+
+#and on the slope (i.e., effects of treatment on the speed throughout time):
+m.1vsl<-lmer(vsl~spa*treatment+(1|male),data=spermdata,REML=F)
+#m.t1<-lmer(vsl~spa*treatment+(1+spa|male),data=spermdata,REML=F)
+anova(m.basevsl,m.0vsl,m.1vsl)
+
+ggplot(m.basevsl,aes(spa,vsl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.0vsl)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VSL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvsllmintercept-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+ggplot(m.basevsl,aes(spa,vsl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.1vsl)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VSL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvsllmslope-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+#Anova.
+anova(m.basevsl,m.0vsl,m.1vsl)
+coef(summary(m.1vsl))
+```
+
+```{r, fig.height=3, fig.width=5}
+#VCL.
+#"Base" model of sperm speed allowing for individual variability in speed (in technical terms, a random intercept for each male: (1 | male)).
+m.basevcl<-lmer(vcl~spa+(1|male),data=spermdata,REML=F)
+
+#Add fixed effects of treatment on the intercept (i.e., a constant difference in speed among males randomly assigned to different treatment):
+m.0vcl<-lmer(vcl~spa+treatment+(1|male),data=spermdata,REML=F)
+
+#and on the slope (i.e., effects of treatment on the speed throughout time):
+m.1vcl<-lmer(vcl~spa*treatment+(1|male),data=spermdata,REML=F)
+#m.t1<-lmer(vsl~spa*treatment+(1+spa|male),data=spermdata,REML=F)
+anova(m.basevcl,m.0vcl,m.1vcl)
+
+ggplot(m.basevcl,aes(spa,vcl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.0vcl)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VCL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvcllmintercept-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+ggplot(m.basevcl,aes(spa,vcl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.1vcl)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VCL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvcllmslope-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+#Anova.
+anova(m.basevcl,m.0vcl,m.1vcl)
+coef(summary(m.1vcl))
+```
+
+```{r, fig.height=3, fig.width=5}
+#VAP.
+#"Base" model of sperm speed allowing for individual variability in speed (in technical terms, a random intercept for each male: (1 | male)).
+m.basevap<-lmer(vap~spa+(1|male),data=spermdata,REML=F)
+
+#Add fixed effects of treatment on the intercept (i.e., a constant difference in speed among males randomly assigned to different treatment):
+m.0vap<-lmer(vap~spa+treatment+(1|male),data=spermdata,REML=F)
+
+#and on the slope (i.e., effects of treatment on the speed throughout time):
+m.1vap<-lmer(vap~spa*treatment+(1|male),data=spermdata,REML=F)
+#m.t1<-lmer(vsl~spa*treatment+(1+spa|male),data=spermdata,REML=F)
+anova(m.basevap,m.0vap,m.1vap)
+
+ggplot(m.basevap,aes(spa,vap,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.0vap)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VAP (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvaplmintercept-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+ggplot(m.basevap,aes(spa,vap,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.1vap)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VAP (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvaplmslope-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+#Anova.
+anova(m.basevap,m.0vap,m.1vap)
+coef(summary(m.1vap))
+```
+
+```{r, fig.height=3, fig.width=5}
+#Create orthogonal polynomials (ot) of time series.
+#Often, our data are not perfectly straight, so we want to capture that curvature with higher-order polynomial terms (time squared, time cubed, etc.). Because our time variable is usually only positive, natural polynomials are correlated, so the estimated parameters will be interdependent. Given a particular time range and a maximum polynomial order, we can transform the polynomial time vectors to make them independent, that is, "orthogonal". This is illustrated in the figure below for linear and quadratic time in the range 1-10. Since orthogonal polynomial time terms are independent, the parameter estimates can be interpreted independently.
+#With orthogonal polynomials, the intercept term reflects the average overall curve height, rather than the height at the left edge of the time window, so if you are interested in differences at the very beginning of the time window, you may be better off sticking with natural polynomials.
+#The first step is to create a third-order polynomial in the range of timebin (spabin, in our case).
+spermdata$spabin<-spermdata$spa/10
+polydegree<-3
+timepoly<-poly((unique(spermdata$spabin)),polydegree)
+#The next step is to create variables ot1, ot2, ot3 corresponding to the orthogonal polynomial time terms and populate their values with the timeBin-appropriate orthogonal polynomial values.
+spermdata[,paste("ot",1:polydegree,sep="")]<-timepoly[spermdata$spabin,1:polydegree]
+#Since this is a simple case with just one within-subjects fixed effect that has only two levels, we can skip to the full model and examine its parameter estimates.
+
+m.vsl.full<-lmer(vsl~(ot1+ot2+ot3)*treatment+
+               (ot1+ot2+ot3|male)+(ot1|male:treatment),
+             control=lmerControl(optimizer="bobyqa"),data=spermdata,REML=F)
+m.vcl.full<-lmer(vcl~(ot1+ot2+ot3)*treatment+
+               (ot1+ot2+ot3|male)+(ot1|male:treatment),
+             control=lmerControl(optimizer="bobyqa"),data=spermdata,REML=F)
+m.vap.full<-lmer(vap~(ot1+ot2+ot3)*treatment+
+               (ot1+ot2+ot3|male)+(ot1|male:treatment),
+             control=lmerControl(optimizer="bobyqa",optCtrl=list(maxfun=10000000)),data=spermdata,REML=F)
+
+coef(summary(m.vsl.full))
+coef(summary(m.vcl.full))
+coef(summary(m.vap.full))
+#Notice that the parameter estimates do not have p-values. There are good reasons for that (see this FAQ for more information), but this is cold comfort to most experimental psychologists, who need to report p-values. The quick and easy solution is to assume that, because we have relatively many observations, the t-distribution converges to the z-distribution, so we can use a normal approximation.
+coefvsl<-data.frame(coef(summary(m.vsl.full))) 
+coefvsl$p<-format.pval(2*(1-pnorm(abs(coefvsl$t.value))),digits=2,eps=0.0001) #Make the p-values a bit more readable.
+coefvcl<-data.frame(coef(summary(m.vcl.full))) 
+coefvcl$p<-format.pval(2*(1-pnorm(abs(coefvcl$t.value))),digits=2,eps=0.0001) #Make the p-values a bit more readable.
+coefvap<-data.frame(coef(summary(m.vap.full))) 
+coefvap$p<-format.pval(2*(1-pnorm(abs(coefvap$t.value))),digits=2,eps=0.0001) #Make the p-values a bit more readable.
+coefvsl
+coefvcl
+coefvap
+#The results do not confirm that vsl was lower overall for the LOW treatment than the HIGH treatment (treatment effect on the intercept - treatmentLOW - had a non-statistically significant positive estimate) and there was a difference in curvature between the treatments (statistically significant effect of treatment on the quadratic term: ot2:treatmentLOW).
+
+#Reporting results
+#There are two rules of thumb for reporting growth curve analysis results:
+#Clearly describe each of the three key components of the model: the functional form (third-order orthogonal polynomial), the fixed effects (effect of Condition on all time terms), and the random effects (effect of Subject on each of the time terms and nested effects of Subject-by-Condition on each of the time terms except the cubic). Depending on the circumstances and complexity of the model, you may want to include additional information about the factors and why they were included or not. It's also a good idea to report which method was used for computing p-values.
+#For key findings, report parameter estimates and standard errors along with significance tests. In some cases the model comparison is going to be enough, but for key findings, the readers should want to see the parameter estimates. The parameter estimate standard errors are critical for interpreting the estimates, so those should be reported as well. The t-values are not critical to report (they are just Estimate divided by the Std Error, so they can always be computed from the reported estimates and standard errors). If there are many estimated parameters, it may be a good idea to focus the main text discussion on the most important ones and report the full set in a table or appendix.
+#Here is how we might report the results from the target fixation example above:
+#Growth curve analysis (Mirman, 2014) was used to analyze the target gaze data from 300ms to 1000ms after word onset. The overall time course of target fixations was modeled with a third-order (cubic) orthogonal polynomial and fixed effects of Condition (Low vs. High frequency; within-participants) on all time terms. The model also included participant random effects on all time terms and participant-by-condition random effects on all time terms except the cubic (estimating random effects is “expensive” in terms of the number of observation required, so this cubic term was excluded because it tends to capture less-relevant effects in the tails). There was a significant effect of Condition on the intercept term, indicating lower overall target fixation proportions for the Low condition relative to the High condition (Estimate = -0.058, SE = 0.019, p < 0.01). There was also a significant effect on the quadratic term, indicating shallower curvature - slower word recognition - in the Low condition relative to the High condition (Estimate = 0.16, SE = 0.054, p < 0.01). All other effects of Condition were not significant (see Table 1 for full results).
+
+ggplot(m.basevsl,aes(spa,vsl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  #stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.vsl.full)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VSL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvslpolynomial-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+ggplot(m.basevcl,aes(spa,vcl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  #stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.vcl.full)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VCL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvclpolynomial-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+ggplot(m.basevap,aes(spa,vap,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  #stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.vap.full)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VAP (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvappolynomial-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+```
+
+```{r, fig.height=3, fig.width=5}
+#Plot fitted values per male using R base function plot and fitted.
+savepdf<-"FALSE"
+
+#VSL.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-spermvslpolynomial-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+plot(spermdata$spa,fitted(m.vsl.full),col="black",pch=21,bg=ifelse(spermdata$treatment=="HIGH","red","lightblue"),xlab="Time (seconds post-activation)",ylab=expression(paste("Fitted VSL (",mu,"m/s) per male")))
+
+fittedL<-tapply(fitted(m.vsl.full)[spermdata$treatment=="LOW"],spermdata$spa[spermdata$treatment=="LOW"],mean)
+fittedH<-tapply(fitted(m.vsl.full)[spermdata$treatment=="HIGH"],spermdata$spa[spermdata$treatment=="HIGH"],mean)
+
+lines(unique(spermdata$spa),fittedL,col="blue",lty="dashed",lwd=2)
+lines(unique(spermdata$spa),fittedH,col="red",lty="dashed",lwd=2)
+box(lwd=5)
+axis(side=1,at=seq(10,60,10),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+#fittedvslpermale<-tapply(fitted(m.vsl.full),list(spermdata$male,spermdata$spa),mean)
+#for(i in 1:6){
+#  plot(rep(i,10),fittedvslpermale[,i],xlim=c(1,6),ylim=c(0,80))
+#  par(new=TRUE)
+#}
+
+#VCL.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-spermvclpolynomial-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+plot(spermdata$spa,fitted(m.vcl.full),col="black",pch=21,bg=ifelse(spermdata$treatment=="HIGH","red","lightblue"),xlab="Time (seconds post-activation)",ylab=expression(paste("Fitted VCL (",mu,"m/s) per male")))
+
+fittedL<-tapply(fitted(m.vcl.full)[spermdata$treatment=="LOW"],spermdata$spa[spermdata$treatment=="LOW"],mean)
+fittedH<-tapply(fitted(m.vcl.full)[spermdata$treatment=="HIGH"],spermdata$spa[spermdata$treatment=="HIGH"],mean)
+
+lines(unique(spermdata$spa),fittedL,col="blue",lty="dashed",lwd=2)
+lines(unique(spermdata$spa),fittedH,col="red",lty="dashed",lwd=2)
+box(lwd=5)
+axis(side=1,at=seq(10,60,10),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+
+#VAP.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-spermvappolynomial-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+plot(spermdata$spa,fitted(m.vap.full),col="black",pch=21,bg=ifelse(spermdata$treatment=="HIGH","red","lightblue"),xlab="Time (seconds post-activation)",ylab=expression(paste("Fitted VAP (",mu,"m/s) per male")))
+
+fittedL<-tapply(fitted(m.vap.full)[spermdata$treatment=="LOW"],spermdata$spa[spermdata$treatment=="LOW"],mean)
+fittedH<-tapply(fitted(m.vap.full)[spermdata$treatment=="HIGH"],spermdata$spa[spermdata$treatment=="HIGH"],mean)
+
+lines(unique(spermdata$spa),fittedL,col="blue",lty="dashed",lwd=2)
+lines(unique(spermdata$spa),fittedH,col="red",lty="dashed",lwd=2)
+box(lwd=5)
+axis(side=1,at=seq(10,60,10),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+```
+
+```{r, fig.height=3, fig.width=5}
+savepdf<-"FALSE"
+#Same as before but eliminating static sperm.
+#Create orthogonal polynomials (ot) of time series.
+#Often, our data are not perfectly straight, so we want to capture that curvature with higher-order polynomial terms (time squared, time cubed, etc.). Because our time variable is usually only positive, natural polynomials are correlated, so the estimated parameters will be interdependent. Given a particular time range and a maximum polynomial order, we can transform the polynomial time vectors to make them independent, that is, "orthogonal". This is illustrated in the figure below for linear and quadratic time in the range 1-10. Since orthogonal polynomial time terms are independent, the parameter estimates can be interpreted independently.
+#With orthogonal polynomials, the intercept term reflects the average overall curve height, rather than the height at the left edge of the time window, so if you are interested in differences at the very beginning of the time window, you may be better off sticking with natural polynomials.
+#The first step is to create a third-order polynomial in the range of timebin (spabin, in our case).
+spermdatanonzero$spabin<-spermdatanonzero$spa/10
+polydegree<-3
+timepoly<-poly((unique(spermdatanonzero$spabin)),polydegree)
+#The next step is to create variables ot1, ot2, ot3 corresponding to the orthogonal polynomial time terms and populate their values with the timeBin-appropriate orthogonal polynomial values.
+spermdatanonzero[,paste("ot",1:polydegree,sep="")]<-timepoly[spermdatanonzero$spabin,1:polydegree]
+#Since this is a simple case with just one within-subjects fixed effect that has only two levels, we can skip to the full model and examine its parameter estimates.
+
+#Base models.
+m.basevsl<-lmer(vsl~spa+(1|male),data=spermdatanonzero,REML=F)
+m.basevcl<-lmer(vcl~spa+(1|male),data=spermdatanonzero,REML=F)
+m.basevap<-lmer(vap~spa+(1|male),data=spermdatanonzero,REML=F)
+
+m.vsl.full<-lmer(vsl~(ot1+ot2+ot3)*treatment+
+               (ot1+ot2+ot3|male)+(ot1|male:treatment),
+             control=lmerControl(optimizer="bobyqa"),data=spermdatanonzero,REML=F)
+m.vcl.full<-lmer(vcl~(ot1+ot2+ot3)*treatment+
+               (ot1+ot2+ot3|male)+(ot1|male:treatment),
+             control=lmerControl(optimizer="bobyqa"),data=spermdatanonzero,REML=F)
+m.vap.full<-lmer(vap~(ot1+ot2+ot3)*treatment+
+               (ot1+ot2+ot3|male)+(ot1|male:treatment),
+             control=lmerControl(optimizer="bobyqa",optCtrl=list(maxfun=10000000)),data=spermdatanonzero,REML=F)
+
+coef(summary(m.vsl.full))
+coef(summary(m.vcl.full))
+coef(summary(m.vap.full))
+#Notice that the parameter estimates do not have p-values. There are good reasons for that (see this FAQ for more information), but this is cold comfort to most experimental psychologists, who need to report p-values. The quick and easy solution is to assume that, because we have relatively many observations, the t-distribution converges to the z-distribution, so we can use a normal approximation.
+coefvsl<-data.frame(coef(summary(m.vsl.full))) 
+coefvsl$p<-format.pval(2*(1-pnorm(abs(coefvsl$t.value))),digits=2,eps=0.0001) #Make the p-values a bit more readable.
+coefvcl<-data.frame(coef(summary(m.vcl.full))) 
+coefvcl$p<-format.pval(2*(1-pnorm(abs(coefvcl$t.value))),digits=2,eps=0.0001) #Make the p-values a bit more readable.
+coefvap<-data.frame(coef(summary(m.vap.full))) 
+coefvap$p<-format.pval(2*(1-pnorm(abs(coefvap$t.value))),digits=2,eps=0.0001) #Make the p-values a bit more readable.
+coefvsl
+coefvcl
+coefvap
+#The results do not confirm that vsl was lower overall for the LOW treatment than the HIGH treatment (treatment effect on the intercept - treatmentLOW - had a non-statistically significant positive estimate) and there was a difference in curvature between the treatments (statistically significant effect of treatment on the quadratic term: ot2:treatmentLOW).
+
+#Reporting results
+#There are two rules of thumb for reporting growth curve analysis results:
+#Clearly describe each of the three key components of the model: the functional form (third-order orthogonal polynomial), the fixed effects (effect of Condition on all time terms), and the random effects (effect of Subject on each of the time terms and nested effects of Subject-by-Condition on each of the time terms except the cubic). Depending on the circumstances and complexity of the model, you may want to include additional information about the factors and why they were included or not. It's also a good idea to report which method was used for computing p-values.
+#For key findings, report parameter estimates and standard errors along with significance tests. In some cases the model comparison is going to be enough, but for key findings, the readers should want to see the parameter estimates. The parameter estimate standard errors are critical for interpreting the estimates, so those should be reported as well. The t-values are not critical to report (they are just Estimate divided by the Std Error, so they can always be computed from the reported estimates and standard errors). If there are many estimated parameters, it may be a good idea to focus the main text discussion on the most important ones and report the full set in a table or appendix.
+#Here is how we might report the results from the target fixation example above:
+#Growth curve analysis (Mirman, 2014) was used to analyze the target gaze data from 300ms to 1000ms after word onset. The overall time course of target fixations was modeled with a third-order (cubic) orthogonal polynomial and fixed effects of Condition (Low vs. High frequency; within-participants) on all time terms. The model also included participant random effects on all time terms and participant-by-condition random effects on all time terms except the cubic (estimating random effects is “expensive” in terms of the number of observation required, so this cubic term was excluded because it tends to capture less-relevant effects in the tails). There was a significant effect of Condition on the intercept term, indicating lower overall target fixation proportions for the Low condition relative to the High condition (Estimate = -0.058, SE = 0.019, p < 0.01). There was also a significant effect on the quadratic term, indicating shallower curvature - slower word recognition - in the Low condition relative to the High condition (Estimate = 0.16, SE = 0.054, p < 0.01). All other effects of Condition were not significant (see Table 1 for full results).
+
+ggplot(m.basevsl,aes(spa,vsl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  #stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.vsl.full)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VSL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvslpolynomial-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+ggplot(m.basevcl,aes(spa,vcl,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  #stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.vcl.full)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VCL (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvclpolynomial-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+
+ggplot(m.basevap,aes(spa,vap,color=treatment))+
+  scale_color_manual(values=c("red","lightblue"),name="Treatment")+
+  #stat_summary(fun.y=mean,geom="line",size=1)+
+  stat_summary(fun.data=mean_se,geom="pointrange",size=0.5)+
+  stat_summary(aes(y=fitted(m.vap.full)),fun.y=mean,geom="line",linetype="dashed")+
+  labs(x="Time (seconds post-activation)",y=expression(paste("VAP (",mu,"m/s)")))+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+        panel.background=element_blank(),axis.line=element_line(colour="black",size=1),
+        axis.ticks=element_line(colour="black",size=1),
+        axis.text.x=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.text.y=element_text(face=NULL,color="black", 
+                                 size=18,angle=0),
+        axis.title=element_text(size=18),
+        legend.position=c(0.8,0.95),legend.direction="horizontal",
+        legend.background=element_rect(fill="white",
+                                       size=0.5,linetype="solid"))+
+  scale_x_continuous(breaks=c(10,20,30,40,50,60),
+                     labels=c("10","20","30","40","50","60"))
+
+if(savepdf=="TRUE"|savepdf=="T"){
+  ggsave("article3-plots/article3-ggplot-spermvappolynomial-pertreatment.pdf", width=14, height=10, dpi=300)
+}
+```
+
+```{r, fig.height=3, fig.width=5}
+#Plot fitted values per male using R base function plot and fitted.
+savepdf<-"FALSE"
+
+#VSL.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-spermvslpolynomial-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+plot(spermdatanonzero$spa,fitted(m.vsl.full),col="black",pch=21,bg=ifelse(spermdatanonzero$treatment=="HIGH","red","lightblue"),xlab="Time (seconds post-activation)",ylab=expression(paste("Fitted VSL (",mu,"m/s) per male")))
+
+fittedL<-tapply(fitted(m.vsl.full)[spermdatanonzero$treatment=="LOW"],spermdatanonzero$spa[spermdatanonzero$treatment=="LOW"],mean)
+fittedH<-tapply(fitted(m.vsl.full)[spermdatanonzero$treatment=="HIGH"],spermdatanonzero$spa[spermdatanonzero$treatment=="HIGH"],mean)
+
+lines(unique(spermdatanonzero$spa),fittedL,col="blue",lty="dashed",lwd=2)
+lines(unique(spermdatanonzero$spa),fittedH,col="red",lty="dashed",lwd=2)
+box(lwd=5)
+axis(side=1,at=seq(10,60,10),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+#fittedvslpermale<-tapply(fitted(m.vsl.full),list(spermdata$male,spermdata$spa),mean)
+#for(i in 1:6){
+#  plot(rep(i,10),fittedvslpermale[,i],xlim=c(1,6),ylim=c(0,80))
+#  par(new=TRUE)
+#}
+
+#VCL.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-spermvclpolynomial-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+plot(spermdatanonzero$spa,fitted(m.vcl.full),col="black",pch=21,bg=ifelse(spermdatanonzero$treatment=="HIGH","red","lightblue"),xlab="Time (seconds post-activation)",ylab=expression(paste("Fitted VCL (",mu,"m/s) per male")))
+
+fittedL<-tapply(fitted(m.vcl.full)[spermdatanonzero$treatment=="LOW"],spermdatanonzero$spa[spermdatanonzero$treatment=="LOW"],mean)
+fittedH<-tapply(fitted(m.vcl.full)[spermdatanonzero$treatment=="HIGH"],spermdatanonzero$spa[spermdatanonzero$treatment=="HIGH"],mean)
+
+lines(unique(spermdatanonzero$spa),fittedL,col="blue",lty="dashed",lwd=2)
+lines(unique(spermdatanonzero$spa),fittedH,col="red",lty="dashed",lwd=2)
+box(lwd=5)
+axis(side=1,at=seq(10,60,10),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+
+#VAP.
+if(savepdf=="TRUE"|savepdf=="T"){
+  pdf(file=paste0("article3-plots/article3-spermvappolynomial-pertreatment.pdf"),width=14,height=10,pointsize=30)
+}
+
+plot(spermdatanonzero$spa,fitted(m.vap.full),col="black",pch=21,bg=ifelse(spermdatanonzero$treatment=="HIGH","red","lightblue"),xlab="Time (seconds post-activation)",ylab=expression(paste("Fitted VAP (",mu,"m/s) per male")))
+
+fittedL<-tapply(fitted(m.vap.full)[spermdatanonzero$treatment=="LOW"],spermdatanonzero$spa[spermdatanonzero$treatment=="LOW"],mean)
+fittedH<-tapply(fitted(m.vap.full)[spermdatanonzero$treatment=="HIGH"],spermdatanonzero$spa[spermdatanonzero$treatment=="HIGH"],mean)
+
+lines(unique(spermdatanonzero$spa),fittedL,col="blue",lty="dashed",lwd=2)
+lines(unique(spermdatanonzero$spa),fittedH,col="red",lty="dashed",lwd=2)
+box(lwd=5)
+axis(side=1,at=seq(10,60,10),labels=c("10","20","30","40","50","60"),
+     lwd=5,lwd.ticks=5)
+axis(side=2,lwd=5,lwd.ticks=5)
+
+if(savepdf=="TRUE"|savepdf=="T"){
+   dev.off()
+}
+```
+
+
+## **Results**
+
+Differential expression was calculated using the following glmm model:
+$$C_{m,f,p}^{t}=\beta_0+M_{0_m}+F_{0_f}+P_{0_p}+\beta_1\cdot T_i+\epsilon_{m,f,p}$$
+where $C_{m,f,p}^{t}$ is the normalized gene count (TMM normalization method) for treatment $t$, male $m$, female $f$ and sequencing pool $p$. $M_{0_m}$ is the intercept for male $m$, $F_{0_f}$ is the intercept for female $f$ and $P_{0_p}$ is the intercept for pool $p$. $T_i$ is the treatment of individual $i$ and $\beta$'s are the slopes.
+
+In terms of R notation using the $glmer.nb$ function of the $lme4$ package, the model is the following:
+```
+glmer.nb(round(normcount)~treatment+(1|male)+(1|female)+(1|seqpool))
+```
+where treatment is a fixed effect and male, female and sequencing pool are random effects. P-values were obtained using anova type III.
+
+Because of the limitations of the data, the model could not be applied to all genes. Only `r nrow(data5pvalues2)` could successfully generate p-values, while the remaining genes generated iteration and/or convergence errors, probably due to low variance.
+
+Of the `r nrow(data5pvalues2)` genes that ran successfully, `r nrow(subset(x=data5pvalues2,pval<=0.05))` yielded p-values<0.05. This number was reduced to `r nrow(subset(x=data5pvalues2,BH<=0.05))` after multiple testing correction using the Benjamini-Hochberg method (also known as False Discovery Rate, or FDR).
+
+The table below shows the differentially expressed genes.
+```{r echo=FALSE}
+data5degenes[,c(1,2,6,7,12)]
+```
+
+Out of `r nrow(subset(x=data5pvalues2,BH<=0.05))` differentially expressed genes, $nucks1a$ (nuclear casein kinase and cyclin-dependent kinase substrate 1a) and $hmgb1a$ (high mobility group box 1a) are protein-coding and the others are non-coding RNAs. Among the 9 non-coding genes recognized by $Ensembl$ (GRCz10), 7 of them are the same gene ($Metazoa\_SRP$, metazoa signal recognition particle) and the other two are $snoU85$ (Small nucleolar RNA U85) and $SCARNA13$ (Small Cajal body specific RNA 13), which somehow act together. According to Wikipedia information: 
+
+```
+An unusual guide snoRNA U85 that functions in both 2'-O-ribose methylation and pseudouridylation of small nuclear RNA (snRNA) U5 has been identified. This composite snoRNA contains both C/D and H/ACA box domains and associates with the proteins specific to each class of snoRNA (fibrillarin and Gar1p, respectively). More composite snoRNAs have now been characterised.
+
+These composite snoRNAs have been found to accumulate in a subnuclear organelle called the Cajal body and are referred to as small Cajal body-specific RNAs. This is in contrast to the majority of C/D box or H/ACA box snoRNAs, which localise to the nucleolus. These Cajal body specific RNAs are proposed to be involved in the modification of RNA polymerase II transcribed spliceosomal RNAs U1, U2, U4, U5 and U12. Not all snoRNAs that have been localised to Cajal bodies are composite C/D and H/ACA box snoRNAs).
+```
+
+Some general information about these genes (not in zebrafish):
+
+$nucks1a$: https://zfin.org/ZDB-GENE-040912-175
+
+$hmgb1a$: https://en.wikipedia.org/wiki/HMGB1
+
+$snoU85$: https://en.wikipedia.org/wiki/Small_nucleolar_RNA
+
+$SCARNA13$: https://en.wikipedia.org/wiki/Small_Cajal_body_specific_RNA_13
+
+$Metazoa\_SRP$: https://en.wikipedia.org/wiki/Signal_recognition_particle_RNA
+
+
+They all seem to be involved in gene regulation at some level but it is very difficult even to speculate how exactly we should interpret these findings. $Metazoa\_SRP$, in particular, seems to be a special case because 7 of the `r nrow(subset(x=data5pvalues2,BH<=0.05))` differentially expressed genes match the gene ID $Metazoa\_SRP$. These genes are ~300 bp long (cDNA). When we look at the location of these genes on the genome (link below), we find that there are more than 50 copies of this gene in the same region of chromosome 11. It might be that more than 7 of these genes were expressed in the samples but the mapping process distributed all the reads among only 7 genes because of the high similarity in the sequences. If that's the case, it means that these genes might not actually be differentially expressed and the significance was an artifact caused by the similarity of the sequences during mapping. That's something to think about.
+
+http://www.ensembl.org/Danio_rerio/Location/View?db=core;g=ENSDARG00000086128;r=11:11302046-12797954;t=ENSDART00000129231
+
+Given this information, it is difficult to know what type of phenotype we should look at. These genes are quite general in function and there is no information about any particular phenotype, probably because of their broad function. However, I would say that we should start with $nucks1a$, $hmgb1a$, $snoU85$ and $SCARNA13$ and try to find anything that can be reflected in the phenotype. Maybe I should first look at qPCR to confirm the expression of these genes. I am trying to find some link between these genes and some measurable phenotype, so that I can look at them after the qPCR. Please, let me know what you think or if you have any suggestion.
