@@ -13,7 +13,10 @@ Perl script for removing adaptor sequences from sRNA-seq reads - remove_adaptors
 # R scripts to generate plots and differential expression analyses:
 
 R_scripts.R
+Godden.R
 For generation of PCA plots, heatmaps, DESeq2 differential expression analysis and interaction terms etc.
+
+willian_article3-rnotebook-version16.Rmd for transcriptome, sRNA and sperm phenotype analysis
 
 # Bubble plots of GO terms
 Python script for use with pytohn v3.11 - go_terms_bubble_plot.py
