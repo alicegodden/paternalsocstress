@@ -1,6 +1,5 @@
 # Title: R scripts for paternal social stress paper
 # Author : Dr. Alice M. Godden
-
 library(DESeq2)
 library(tidyverse)
 if (!requireNamespace('BiocManager', quietly = TRUE))
@@ -11,7 +10,7 @@ BiocManager::install('pheatmap')
 library(ggplot2)
 
 #use for rRNA seq and sub in the right file names 
-countData <- read.csv("pirna_24_rawcounts_use.csv")
+countData <- read.csv("mir_matched_counts_200.csv")
 head(countData)
 
 
@@ -23,7 +22,7 @@ head(df)
 
 mode(df)
 
-colData <- read.csv('pirna_metadata_use.csv')
+colData <- read.csv('willian_metadata_ordered.csv')
 head(colData)
 #make first column of colData into row names
 rownames(colData) <- colData [,1]  
@@ -49,13 +48,13 @@ dds <- DESeqDataSetFromMatrix(countData=round (df),
                               design = ~ Group)
 
 # for piRNA only DESeq to estimate size factors
-dds <- estimateSizeFactors(dds)
+#dds <- estimateSizeFactors(dds)
 # Estimate gene-wise dispersions
-dds <- estimateDispersionsGeneEst(dds)
+#dds <- estimateDispersionsGeneEst(dds)
 # Set the gene-wise dispersion estimates as the final dispersion estimates
-dispersions(dds) <- mcols(dds)$dispGeneEst
+#dispersions(dds) <- mcols(dds)$dispGeneEst
 # Continue with the DESeq workflow
-dds <- nbinomWaldTest(dds)
+#dds <- nbinomWaldTest(dds)
 
 
 #for two factor mRNA analysis to include female id as a factor
@@ -84,7 +83,7 @@ dds
 #step3 run DESeq
 dds <- DESeq (dds)
 resultsNames(dds)
-dds$condition <-relevel(dds$condition, ref = "Control") #control
+dds$condition <-relevel(dds$condition, ref = "Low") #control
 res <- results(dds)
 
 #results(dds, contrast=list(c("Treatment_Temperature_vs_Control", "TreatmentTemperature.ReadsGood"  )))
@@ -102,7 +101,7 @@ write.csv(res, file="file.csv")
 
 #to get normalised counts
 normalized_counts <- counts(dds, normalized = TRUE)
-write.csv(normalized_counts, file="normalised_counts_Pirnas.csv")
+write.csv(normalized_counts, file="normalised_counts_mir10b.csv")
 # contrasts
 
 resultsNames(dds)
@@ -270,7 +269,7 @@ norm_counts <- assay(ldat)
 row_variances <- rowVars(norm_counts, useNames = TRUE)
 
 # Order the genes by variance and select the top 30 most variable genes
-topVarGenes <- names(sort(row_variances, decreasing = TRUE)[1:30])
+topVarGenes <- names(sort(row_variances, decreasing = TRUE)[1:46])
 
 # Extract data for the top variable genes
 heatmap_data <- norm_counts[topVarGenes, ]
@@ -282,11 +281,64 @@ pheatmap(heatmap_data,
          cluster_cols = FALSE, 
          show_rownames = TRUE, 
          show_colnames = TRUE, 
-        
+         main = "dre-miR-200a-5p",
+         fontsize_row = 4,
+         fontsize_col = 8,
+         cellheight = 4,
+         cellwidth = 8,
          fontface = "bold",
          scale = "none",  # Normalize rows (genes) to have mean = 0 and sd = 1
          color= inferno(256),
-         annotation_col = as.data.frame(colData(dds)[, "Group", drop=FALSE]))
+         annotation_col = as.data.frame(colData(dds)[, "condition", drop=FALSE]))
+
+# grouping High and Low conditions together
+library(pheatmap)
+
+
+# Example data (replace with your actual heatmap_data and dds)
+heatmap_data <- matrix(rnorm(100), nrow = 10)  # Example heatmap data
+dds <- data.frame(condition = rep(c("Low", "High"), each = 5))  # Example condition data
+
+# Specify the desired column order
+desired_order <- c(
+  "E100.1", "E100.2", "E100.3", "E100.4",
+  "E101.1", "E101.2", "E101.3", "E101.4",
+  "E104.1", "E104.2", "E104.3", "E104.4",
+  "E105.1", "E105.2", "E105.3", "E105.4",
+  "E110.1", "E110.2", "E110.3", "E110.4",
+  "E112.4", "E112.5", "E112.7", "E112.8",
+  "E113.10", "E113.11", "E113.13", "E113.9",
+  "E82.1", "E82.2", "E82.3", "E82.5",
+  "E83.1", "E83.3", "E83.4", "E83.5",
+  "E102.1", "E102.2", "E102.3", "E102.4",
+  "E103.1", "E103.2", "E103.3", "E103.4",
+  "E106.1", "E106.2", "E106.3", "E106.4",
+  "E107.1", "E107.2", "E107.3", "E107.4",
+  "E108.1", "E108.2", "E108.3", "E108.4",
+  "E109.1", "E109.2", "E109.3", "E109.4",
+  "E111.1", "E111.2", "E111.3", "E111.4",
+  "E114.1", "E114.3", "E114.4", "E114.5",
+  "E115.1", "E115.2", "E115.4", "E115.5",
+  "E80.1", "E80.2", "E80.3", "E80.4",
+  "E81.1", "E81.2", "E81.4", "E81.5"
+)
+
+# Ensure heatmap_data and dds are ordered according to desired_order
+order <- match(colnames(heatmap_data), desired_order)
+heatmap_data_ordered <- heatmap_data[, order]
+
+# Create the heatmap
+pheatmap(heatmap_data_ordered,
+         cluster_rows = TRUE,
+         cluster_cols = FALSE,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         main = "Heatmap with Specific Column Order",
+         font.face = "bold",
+         scale = "none",  # Normalize rows (genes) to have mean = 0 and sd = 1
+         color = inferno(256),
+         annotation_col = as.data.frame(dds),
+         annotation_colors = list(condition = c("Low" = "blue", "High" = "red")))
 
 ## To specify differentially expressed sRNAs-
 # Sample heatmap data (replace this with your actual data)
