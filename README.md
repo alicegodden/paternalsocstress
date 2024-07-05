@@ -20,3 +20,6 @@ willian_article3-rnotebook-version16.Rmd for transcriptome, sRNA and sperm pheno
 
 # Bubble plots of GO terms
 Python script for use with pytohn v3.11 - go_terms_bubble_plot.py
+
+# miRanda
+Contains the full scripts and pipelines used to analyse miRNA:gene target interactions
