@@ -28,6 +28,11 @@ awk '$3=="three_prime_UTR"' Danio_rerio.GRCz11.107.gff3 >GRCz11.107.UTRs.gff3
 miRanda 3.3a was installed in a conda environment from:
 https://anaconda.org/bioconda/miranda
 
+ran as batch job:
+module load python/anaconda/2019.10/3.7
+source activate miranda
+miranda test.fasta NamedUTRs.fasta > miranda.results.output
+
 Filtered MiRanda output for highest scores
 cat *.output |grep ">>" |sort -k5,5nr |sed 's/>>//g' |cat <(echo "Seq1,Seq2,Tot Score,Tot Energy,Max Score,Max Energy,Strand,Len1,Len2,Positions" |tr "," "\t") - >MirandaOutput.tab
 
