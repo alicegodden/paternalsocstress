@@ -14,6 +14,7 @@ Perl script for removing adaptor sequences from sRNA-seq reads - remove_adaptors
 
 R_scripts.R
 Godden.R
+hypergeometrictest.R
 For generation of PCA plots, heatmaps, DESeq2 differential expression analysis and interaction terms etc.
 
 willian_article3-rnotebook-version16.Rmd for transcriptome, sRNA and sperm phenotype analysis
