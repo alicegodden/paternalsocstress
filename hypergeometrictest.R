@@ -1,35 +1,35 @@
-# Read in the list of DE genes
-de_genes_df <- read.csv("DE_GENES.csv", header = FALSE)
-DE_genes <- de_genes_df[[1]]  # Assuming gene IDs are in the first column
 
-# Read in the list of miRNA target genes
-mirna_targets_df <- read.csv("genes_targeted_mirna.csv", header = FALSE)
-miRNA_targets <- mirna_targets_df[[1]]  # Assuming gene IDs are in the first column
+# 15198 is total number of genes 
+# 612 is number of significantly differentially expressed genes
+# 515 is total number of genes targeted by our mirnas
+# 358 is number of significanly differentially expressed genes targeted by our miRNAs
+#The table deTable now has the following format, matching the structure in the example:
+  
+#  In Gene Set (miRNA Target)	Out of Gene Set (Non-miRNA Target)
+#DE (yes)	358	254
+#Not DE (no)	157	14429
+# Construct the contingency table in the same format as the example
+deTable <- matrix(c(358, 254, 157, 14429),
+                  nrow = 2,
+                  dimnames = list(DE = c("yes", "no"),
+                                  GeneSet = c("in", "out")))
+
+# Display the table
+deTable
+
+# Perform Fisher's exact test
+fisher.test(deTable, alternative = "greater")
 
 
-k <- length(intersect(DE_genes, miRNA_targets))
-
-
-# Hypergeometric test of miRNA target genes compared to all DE genes
 # Parameters
-N <- 15198  # total number of genes in your background
-M <- 358    # total number of miRNA target genes in the background
-n <- 612    # number of DE genes
-
+N <- 15198      # Total genes
+M <- 515        # Total miRNA target genes in the gene set
+n <- 612        # Total DE genes
+k <- 358        # DE genes that are also in the gene set (miRNA targets)
 
 # Hypergeometric test
 p_value <- phyper(k - 1, M, N - M, n, lower.tail = FALSE)
 
-# Print the p-value to interpret enrichment
-print(p_value)
-
-
-# Calculate Expected Overlap
-expected_overlap <- (M / N) * n
-
-# Calculate Fold Enrichment
-fold_enrichment <- k / expected_overlap
-
-# Print the results
+# Print the p-value
 print(paste("P-value:", p_value))
-print(paste("Fold Enrichment:", fold_enrichment))
+
