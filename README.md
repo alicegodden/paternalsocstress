@@ -27,3 +27,6 @@ Python script for use with pytohn v3.11 - go_terms_bubble_plot.py
 
 # miRanda
 Contains the full scripts and pipelines used to analyse miRNA:gene target interactions
+
+# Cite
+Godden, A.M., Silva, W.T.A.F., Kiehl, B. et al. Environmentally induced variation in sperm sRNAs is linked to gene expression and transposable elements in zebrafish offspring. Heredity 134, 234–246 (2025). https://doi.org/10.1038/s41437-025-00752-2
